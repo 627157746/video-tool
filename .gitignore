@@ -10,6 +10,11 @@ $RECYCLE.BIN/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json.example
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 *.swp
 *.swo
 *~
@@ -22,8 +27,6 @@ $RECYCLE.BIN/
 *.key
 secrets/
 credentials.json
-
-# App local config that may contain API keys (keep examples tracked)
 **/config.local.toml
 **/config.local.json
 **/*secret*
@@ -39,11 +42,16 @@ dist-ssr/
 .turbo/
 .cache/
 *.tsbuildinfo
+*.local
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+lerna-debug.log*
 .pnpm-store/
+# Prefer pnpm only — do not commit other lockfiles
+package-lock.json
+yarn.lock
 
 # --- Rust / Cargo ---
 target/
@@ -53,10 +61,8 @@ Cargo.lock.bak
 # --- Tauri ---
 src-tauri/target/
 src-tauri/gen/schemas/
-# Generated WIX/NSIS artifacts
-src-tauri/target/release/bundle/
 
-# --- Python (if used for faster-whisper sidecar scripts) ---
+# --- Python (transcribe sidecars) ---
 __pycache__/
 *.py[cod]
 *$py.class
@@ -70,12 +76,11 @@ env/
 *.egg-info/
 .eggs/
 
-# --- Video-tool workspace & media (user data, large binaries) ---
-# Runtime workspace (PRODUCT_SPEC: jobs live here)
-workspace/
+# --- Video-tool workspace & media ---
+workspace/*
 !workspace/.gitkeep
 
-# Common media containers (do NOT use *.ts — conflicts with TypeScript)
+# Common media containers (do NOT use global *.ts — conflicts with TypeScript)
 *.mp4
 *.mkv
 *.webm
@@ -89,31 +94,23 @@ workspace/
 *.m3u8
 *.part
 *.ytdl
-# MPEG-TS only under media-ish paths (avoid ignoring src/**/*.ts)
 *.mpegts
 workspace/**/*.ts
 **/jobs/**/*.ts
 **/media/**/*.ts
 
-# Runtime transcript/summary under jobs (docs/ stays tracked)
-workspace/**/transcript/
-workspace/**/summary/
-**/jobs/**/transcript/
-**/jobs/**/summary/
-
-# --- ML models (large) ---
-models/
+# --- ML models (root / named dirs only; do NOT ignore src-tauri/src/models) ---
+/models/
 *.gguf
 *.onnx
 *.pt
 *.pth
 *.safetensors
-# Whisper/cpp weight dumps often end in .bin — scope under models only
-models/**/*.bin
-whisper.cpp/
-faster-whisper-models/
+/models/**/*.bin
+/whisper.cpp/
+/faster-whisper-models/
 
-# --- Sidecar binaries dropped into the repo ---
+# --- Sidecar binaries ---
 /bin/
 /sidecars/
 *.exe
@@ -133,7 +130,7 @@ coverage/
 lcov.info
 htmlcov/
 
-# --- Misc ---
+# --- Archives ---
 *.zip
 *.7z
 *.rar

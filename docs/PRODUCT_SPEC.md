@@ -3,6 +3,7 @@
 > 状态：设计共识已锁定（来源：产品 grill 会话）  
 > 目标用户：仅自己使用，架构按「可演进到小范围分发」预留  
 > 版本目标：v0.1 = **接近自用定稿**（非「仅骨架能跑」）  
+> 包管理：**pnpm**（不要使用 npm / yarn）  
 > 文档用途：实现与任务拆分时的单一事实来源；改需求先改本文再改代码
 
 ---
@@ -93,10 +94,24 @@
 |----|------|
 | 桌面壳 | Tauri 2 |
 | 核心编排 | Rust（任务队列、进程/sidecar 管理、工作区、配置、IPC） |
-| UI | 前端（框架实现阶段再定；信息架构见第 6 节） |
+| UI | React 19 + TypeScript + Vite |
+| 包管理 | **pnpm** |
 | 下载/流 | yt-dlp、streamlink、ffmpeg 等 sidecar |
 | 转写 | 本地（如 faster-whisper / whisper.cpp 等，实现时选定并写入本文修订） |
 | 总结 | 云端 HTTP API；**视频文件永不上传** |
+
+### 4.1.1 工程初始化状态
+
+仓库已完成 Tauri 2 骨架初始化：
+
+- 包名：`video-tool` / identifier `com.videotool.app`
+- 前端：`src/`（任务中心 + 设置只读预览）
+- 后端：`src-tauri/`（Job 模型、workspace 落盘、config、sidecar 探测、IPC 命令）
+- 配置文件：`%APPDATA%/video-tool/config.json`（Windows）
+- 默认工作区：`%LOCALAPPDATA%/video-tool/workspace`（Windows；可用配置覆盖）
+- 包管理：`pnpm`（`pnpm-lock.yaml`；禁止提交 `package-lock.json`）
+
+仍属里程碑 1 的未完成部分：真实执行器（下载/录制/转写/总结）、设置编辑 UI、任务队列调度。
 
 ### 4.2 模块边界
 
@@ -189,7 +204,7 @@ ingest（download | live-record | import-local）
       → summary/summary.md
 ```
 
-**推荐默认勾选（可在实现时做成设置默认值）：**
+**推荐默认勾选：**
 
 - 默认勾选：自动转写  
 - 默认不勾选：自动总结（耗 Key、长文更慢；宜先看字幕再总结）
@@ -290,7 +305,7 @@ ingest（download | live-record | import-local）
 - Job 元数据记录 `provider_profile_id`、模型名等，**永不写入 Key**  
 - 连通测试按档案执行  
 
-示意（非最终文件格式）：
+示意（非最终实现格式）：
 
 ```toml
 [[providers]]
@@ -334,7 +349,19 @@ default_model = "claude-sonnet-4-5"
 
 ---
 
-## 10. 实现约束与风格（给后续开发）
+## 10. 工程与开发约定
+
+### 10.1 包管理（强制 pnpm）
+
+- 安装依赖：`pnpm install`
+- 开发：`pnpm tauri:dev` / `pnpm dev`
+- 构建前端：`pnpm build`
+- 类型检查：`pnpm typecheck`
+- **禁止**使用 `npm install` / `yarn` 作为日常依赖安装方式
+- 锁文件只保留 `pnpm-lock.yaml`；`package-lock.json` / `yarn.lock` 应删除且被 gitignore
+- Tauri `beforeDevCommand` / `beforeBuildCommand` 必须调用 **pnpm**
+
+### 10.2 实现约束
 
 - 小步可逆改动；先定 Job 目录契约与状态机，再填三条业务线。  
 - 三条业务线并行时，**禁止**各自发明互不兼容的输出目录。  
@@ -345,8 +372,6 @@ default_model = "claude-sonnet-4-5"
 ---
 
 ## 11. 决策日志（grill 锁定顺序）
-
-便于回溯「为什么这样定」：
 
 1. 用户：仅自己用  
 2. 能力：下载 + 直播 + 转写总结都要；**并行**推进  
@@ -363,18 +388,24 @@ default_model = "claude-sonnet-4-5"
 13. OS/依赖：Windows 为主并预留跨平台结构；sidecar 混合解析（内置 → 配置 → PATH）  
 14. 文本路径：分段转写 → **合并文字** → 总结  
 15. 超长：失败并提示；可缩小 segment 范围；不做截断/自动 map-reduce  
+16. 工程：包管理使用 **pnpm**  
 
 ---
 
 ## 12. 文档维护
 
 - 实现阶段若变更已锁定决策：**先更新本节与对应章节，再改代码**。  
-- 选定具体前端框架、转写引擎包名、精确配置文件名后，在本文增加「实现附录」或另文 `docs/ARCHITECTURE.md` 链接到此规格。  
+- 选定转写引擎包名、精确配置文件字段后，可另增 `docs/ARCHITECTURE.md` 并链接到此规格。  
 
 ---
 
-## 13. 下一步（文档之外）
+## 13. 下一步
 
-- [ ] 按第 3.3 节拆实现任务（或引入 Trellis）  
-- [ ] 初始化 Tauri 2 工程与 `workspace` 契约的最小可运行骨架  
-- [ ] 选定前端栈与转写 sidecar 具体方案并回写本文附录  
+- [x] 产品规格文档  
+- [x] Tauri 2 工程骨架（任务中心 + Job 落盘 + 配置/sidecar 探测）  
+- [x] 切换为 pnpm  
+- [ ] 下载执行器（yt-dlp）  
+- [ ] 直播分段录制  
+- [ ] 本地转写 + 合并文字  
+- [ ] 双协议总结 + 模板  
+- [ ] 流水线调度 / 重试 / 导出 / 托盘  
