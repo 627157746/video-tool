@@ -42,12 +42,43 @@ import "./App.css";
 
 type CreateMode = "download" | "live" | "import" | null;
 type MainView = "jobs" | "settings";
+type SettingsPathPickerId =
+  | "workspace"
+  | "transcribe-model"
+  | "yt-dlp"
+  | "ffmpeg"
+  | "ffprobe"
+  | "streamlink"
+  | "transcribe";
 type LogName =
   | "download"
   | "record"
   | "transcribe"
   | "merge_transcript"
   | "summarize";
+
+interface PathPickerFieldProps {
+  label: string;
+  value: string;
+  emptyValueLabel: string;
+  selectButtonLabel: string;
+  isSelecting: boolean;
+  isDisabled: boolean;
+  onSelect: () => void;
+  onClear?: () => void;
+}
+
+interface SettingsPathSelectionOptions {
+  pickerId: SettingsPathPickerId;
+  title: string;
+  currentPath: string;
+  selectionKind: "file" | "directory";
+  filters?: Array<{
+    name: string;
+    extensions: string[];
+  }>;
+  updatePath: (selectedPath: string) => void;
+}
 
 const LOG_NAMES: LogName[] = [
   "download",
@@ -152,6 +183,57 @@ function resolveExistingDefaultId(
   return availableIds.find((availableId) => availableId.trim())?.trim() ?? "";
 }
 
+function PathPickerField({
+  label,
+  value,
+  emptyValueLabel,
+  selectButtonLabel,
+  isSelecting,
+  isDisabled,
+  onSelect,
+  onClear,
+}: PathPickerFieldProps) {
+  const hasSelectedPath = value.trim().length > 0;
+
+  return (
+    <div className="file-picker-field">
+      <span>{label}</span>
+      <div className="file-picker-row">
+        <button
+          className="btn secondary"
+          type="button"
+          disabled={isDisabled}
+          aria-label={`${selectButtonLabel}：${label}`}
+          onClick={onSelect}
+        >
+          {isSelecting
+            ? "正在选择…"
+            : hasSelectedPath
+              ? "重新选择"
+              : selectButtonLabel}
+        </button>
+        {onClear && (
+          <button
+            className="btn ghost"
+            type="button"
+            disabled={isDisabled || !hasSelectedPath}
+            aria-label={`清空${label}`}
+            onClick={onClear}
+          >
+            清空
+          </button>
+        )}
+        <div
+          className={`file-picker-value${hasSelectedPath ? "" : " muted"}`}
+          title={hasSelectedPath ? value : emptyValueLabel}
+        >
+          {hasSelectedPath ? value : emptyValueLabel}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [view, setView] = useState<MainView>("jobs");
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
@@ -170,6 +252,8 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isBusy, setIsBusy] = useState(false);
   const [isSelectingLocalFile, setIsSelectingLocalFile] = useState(false);
+  const [activeSettingsPathPicker, setActiveSettingsPathPicker] =
+    useState<SettingsPathPickerId | null>(null);
   const [deletingJobIds, setDeletingJobIds] = useState<Set<string>>(new Set());
   const [stoppingRecordingJobIds, setStoppingRecordingJobIds] = useState<
     Set<string>
@@ -692,6 +776,45 @@ function App() {
     }
   }
 
+  async function handleSelectSettingsPath({
+    pickerId,
+    title,
+    currentPath,
+    selectionKind,
+    filters,
+    updatePath,
+  }: SettingsPathSelectionOptions) {
+    setErrorMessage(null);
+    setActiveSettingsPathPicker(pickerId);
+
+    try {
+      const defaultPath = currentPath.trim() || undefined;
+      const selectedPath =
+        selectionKind === "directory"
+          ? await open({
+              title,
+              defaultPath,
+              multiple: false,
+              directory: true,
+            })
+          : await open({
+              title,
+              defaultPath,
+              multiple: false,
+              directory: false,
+              filters,
+            });
+
+      if (selectedPath) {
+        updatePath(selectedPath);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setActiveSettingsPathPicker(null);
+    }
+  }
+
   async function submitCreate() {
     if (!createMode) {
       return;
@@ -1090,6 +1213,8 @@ function App() {
     void reloadLog(jobId, nextLogName);
     return true;
   }
+
+  const settingsPathSelectionIsActive = activeSettingsPathPicker !== null;
 
   return (
     <div className="app-shell">
@@ -1620,13 +1745,23 @@ function App() {
               <article className="card">
                 <h2>工作区与默认流水线</h2>
                 <div className="form-grid">
-                  <label>
-                    <span>工作区路径</span>
-                    <input
-                      value={settingsWorkspace}
-                      onChange={(event) => setSettingsWorkspace(event.target.value)}
-                    />
-                  </label>
+                  <PathPickerField
+                    label="工作区路径"
+                    value={settingsWorkspace}
+                    emptyValueLabel="尚未选择工作区"
+                    selectButtonLabel="选择目录"
+                    isSelecting={activeSettingsPathPicker === "workspace"}
+                    isDisabled={isBusy || settingsPathSelectionIsActive}
+                    onSelect={() =>
+                      void handleSelectSettingsPath({
+                        pickerId: "workspace",
+                        title: "选择工作区目录",
+                        currentPath: settingsWorkspace,
+                        selectionKind: "directory",
+                        updatePath: setSettingsWorkspace,
+                      })
+                    }
+                  />
                   <label>
                     <span>默认直播分段（分钟）</span>
                     <input
@@ -1738,14 +1873,25 @@ function App() {
                       />
                     </label>
                   </div>
-                  <label>
-                    <span>whisper.cpp 模型文件</span>
-                    <input
-                      value={settingsTranscribeModel}
-                      onChange={(event) => setSettingsTranscribeModel(event.target.value)}
-                      placeholder="D:/models/ggml-base.bin"
-                    />
-                  </label>
+                  <PathPickerField
+                    label="whisper.cpp 模型文件"
+                    value={settingsTranscribeModel}
+                    emptyValueLabel="尚未选择 GGML 模型文件"
+                    selectButtonLabel="选择文件"
+                    isSelecting={activeSettingsPathPicker === "transcribe-model"}
+                    isDisabled={isBusy || settingsPathSelectionIsActive}
+                    onSelect={() =>
+                      void handleSelectSettingsPath({
+                        pickerId: "transcribe-model",
+                        title: "选择 whisper.cpp GGML 模型文件",
+                        currentPath: settingsTranscribeModel,
+                        selectionKind: "file",
+                        filters: [{ name: "GGML 模型", extensions: ["bin"] }],
+                        updatePath: setSettingsTranscribeModel,
+                      })
+                    }
+                    onClear={() => setSettingsTranscribeModel("")}
+                  />
                   <p className="muted small mono">
                     配置文件：{config?.config_path ?? "—"}
                   </p>
@@ -1755,47 +1901,100 @@ function App() {
               <article className="card">
                 <h2>Sidecar 路径（可选覆盖）</h2>
                 <div className="form-grid">
-                  <label>
-                    <span>yt-dlp</span>
-                    <input
-                      value={settingsYtDlp}
-                      onChange={(event) => setSettingsYtDlp(event.target.value)}
-                      placeholder="留空则使用 PATH"
-                    />
-                  </label>
-                  <label>
-                    <span>ffmpeg</span>
-                    <input
-                      value={settingsFfmpeg}
-                      onChange={(event) => setSettingsFfmpeg(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>ffprobe</span>
-                    <input
-                      value={settingsFfprobe}
-                      onChange={(event) => setSettingsFfprobe(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>streamlink</span>
-                    <input
-                      value={settingsStreamlink}
-                      onChange={(event) => setSettingsStreamlink(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <span>whisper.cpp / whisper-cli</span>
-                    <input
-                      value={settingsTranscribe}
-                      onChange={(event) => setSettingsTranscribe(event.target.value)}
-                      placeholder="D:/tools/whisper-cli.exe"
-                    />
-                  </label>
+                  <PathPickerField
+                    label="yt-dlp"
+                    value={settingsYtDlp}
+                    emptyValueLabel="未覆盖，使用内置版本或 PATH"
+                    selectButtonLabel="选择文件"
+                    isSelecting={activeSettingsPathPicker === "yt-dlp"}
+                    isDisabled={isBusy || settingsPathSelectionIsActive}
+                    onSelect={() =>
+                      void handleSelectSettingsPath({
+                        pickerId: "yt-dlp",
+                        title: "选择 yt-dlp 可执行文件",
+                        currentPath: settingsYtDlp,
+                        selectionKind: "file",
+                        updatePath: setSettingsYtDlp,
+                      })
+                    }
+                    onClear={() => setSettingsYtDlp("")}
+                  />
+                  <PathPickerField
+                    label="ffmpeg"
+                    value={settingsFfmpeg}
+                    emptyValueLabel="未覆盖，使用内置版本或 PATH"
+                    selectButtonLabel="选择文件"
+                    isSelecting={activeSettingsPathPicker === "ffmpeg"}
+                    isDisabled={isBusy || settingsPathSelectionIsActive}
+                    onSelect={() =>
+                      void handleSelectSettingsPath({
+                        pickerId: "ffmpeg",
+                        title: "选择 ffmpeg 可执行文件",
+                        currentPath: settingsFfmpeg,
+                        selectionKind: "file",
+                        updatePath: setSettingsFfmpeg,
+                      })
+                    }
+                    onClear={() => setSettingsFfmpeg("")}
+                  />
+                  <PathPickerField
+                    label="ffprobe"
+                    value={settingsFfprobe}
+                    emptyValueLabel="未覆盖，使用内置版本或 PATH"
+                    selectButtonLabel="选择文件"
+                    isSelecting={activeSettingsPathPicker === "ffprobe"}
+                    isDisabled={isBusy || settingsPathSelectionIsActive}
+                    onSelect={() =>
+                      void handleSelectSettingsPath({
+                        pickerId: "ffprobe",
+                        title: "选择 ffprobe 可执行文件",
+                        currentPath: settingsFfprobe,
+                        selectionKind: "file",
+                        updatePath: setSettingsFfprobe,
+                      })
+                    }
+                    onClear={() => setSettingsFfprobe("")}
+                  />
+                  <PathPickerField
+                    label="streamlink"
+                    value={settingsStreamlink}
+                    emptyValueLabel="未覆盖，使用内置版本或 PATH"
+                    selectButtonLabel="选择文件"
+                    isSelecting={activeSettingsPathPicker === "streamlink"}
+                    isDisabled={isBusy || settingsPathSelectionIsActive}
+                    onSelect={() =>
+                      void handleSelectSettingsPath({
+                        pickerId: "streamlink",
+                        title: "选择 streamlink 可执行文件",
+                        currentPath: settingsStreamlink,
+                        selectionKind: "file",
+                        updatePath: setSettingsStreamlink,
+                      })
+                    }
+                    onClear={() => setSettingsStreamlink("")}
+                  />
+                  <PathPickerField
+                    label="whisper.cpp / whisper-cli"
+                    value={settingsTranscribe}
+                    emptyValueLabel="未覆盖，使用内置版本或 PATH"
+                    selectButtonLabel="选择文件"
+                    isSelecting={activeSettingsPathPicker === "transcribe"}
+                    isDisabled={isBusy || settingsPathSelectionIsActive}
+                    onSelect={() =>
+                      void handleSelectSettingsPath({
+                        pickerId: "transcribe",
+                        title: "选择 whisper-cli 可执行文件",
+                        currentPath: settingsTranscribe,
+                        selectionKind: "file",
+                        updatePath: setSettingsTranscribe,
+                      })
+                    }
+                    onClear={() => setSettingsTranscribe("")}
+                  />
                 </div>
               </article>
 
-              <article className="card">
+              <article className="card settings-wide">
                 <h2>Sidecar 探测结果</h2>
                 <div className="sidecar-list">
                   {sidecars &&

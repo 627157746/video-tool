@@ -638,8 +638,8 @@ button:disabled {
 
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
   margin-top: 0.25rem;
 }
 
@@ -647,7 +647,7 @@ button:disabled {
   background: rgba(2, 6, 23, 0.35);
   border: 1px solid rgba(148, 163, 184, 0.12);
   border-radius: 1.05rem;
-  padding: 1rem;
+  padding: 1.2rem;
 }
 
 .card.soft {
@@ -684,8 +684,13 @@ button:disabled {
 }
 
 .sidecar-row {
+  min-width: 0;
   padding-bottom: 0.75rem;
   border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.sidecar-row .mono {
+  overflow-wrap: anywhere;
 }
 
 .pipeline-flags {
@@ -856,7 +861,12 @@ button:disabled {
 }
 
 .settings-wide {
-  grid-column: span 2;
+  grid-column: 1 / -1;
+}
+
+.settings .sidecar-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 1.5rem;
 }
 
 .profile-editor {
@@ -941,12 +951,14 @@ textarea:focus-visible,
     grid-template-columns: 1fr;
   }
 
-  .settings-wide {
-    grid-column: span 1;
-  }
 }
 
 @media (max-width: 960px) {
+  .cards,
+  .settings .sidecar-list {
+    grid-template-columns: 1fr;
+  }
+
   .topbar {
     flex-wrap: wrap;
   }
