@@ -97,7 +97,7 @@
 | UI | React 19 + TypeScript + Vite |
 | 包管理 | **pnpm** |
 | 下载/流 | yt-dlp、streamlink、ffmpeg 等 sidecar |
-| 转写 | 本地（如 faster-whisper / whisper.cpp 等，实现时选定并写入本文修订） |
+| 转写 | 本地 whisper.cpp（`whisper-cli`；可执行文件、GGML 模型路径与语言可配置） |
 | 总结 | 云端 HTTP API；**视频文件永不上传** |
 
 ### 4.1.1 工程初始化状态
@@ -105,13 +105,13 @@
 仓库已完成 Tauri 2 骨架初始化：
 
 - 包名：`video-tool` / identifier `com.videotool.app`
-- 前端：`src/`（任务中心 + 设置只读预览）
-- 后端：`src-tauri/`（Job 模型、workspace 落盘、config、sidecar 探测、IPC 命令）
+- 前端：`src/`（任务中心、步骤/分段重试、产物查看、Provider/模板/sidecar 设置）
+- 后端：`src-tauri/`（Job 状态机、完整流水线、workspace、sidecar 进程监管、双协议总结与 IPC）
 - 配置文件：`%APPDATA%/video-tool/config.json`（Windows）
 - 默认工作区：`%LOCALAPPDATA%/video-tool/workspace`（Windows；可用配置覆盖）
 - 包管理：`pnpm`（`pnpm-lock.yaml`；禁止提交 `package-lock.json`）
 
-仍属里程碑 1 的未完成部分：真实执行器（下载/录制/转写/总结）、设置编辑 UI、任务队列调度。
+v0.1 实现已覆盖下载、本地导入、直播分段录制、本地转写与合并、双协议总结、自动流水线、单步/单段重试、选段、导出和录制托盘保活。外部工具与云端 Provider 的真实可用性按目标环境配置验收。
 
 ### 4.2 模块边界
 
@@ -395,7 +395,7 @@ default_model = "claude-sonnet-4-5"
 ## 12. 文档维护
 
 - 实现阶段若变更已锁定决策：**先更新本节与对应章节，再改代码**。  
-- 选定转写引擎包名、精确配置文件字段后，可另增 `docs/ARCHITECTURE.md` 并链接到此规格。  
+- v0.1 转写引擎已锁定为 whisper.cpp `whisper-cli`；配置字段为 `sidecar_paths.transcribe`、`transcribe_model`、`transcribe_language`。
 
 ---
 
@@ -404,8 +404,10 @@ default_model = "claude-sonnet-4-5"
 - [x] 产品规格文档  
 - [x] Tauri 2 工程骨架（任务中心 + Job 落盘 + 配置/sidecar 探测）  
 - [x] 切换为 pnpm  
-- [ ] 下载执行器（yt-dlp）  
-- [ ] 直播分段录制  
-- [ ] 本地转写 + 合并文字  
-- [ ] 双协议总结 + 模板  
-- [ ] 流水线调度 / 重试 / 导出 / 托盘  
+- [x] 下载执行器（yt-dlp）
+- [x] 直播分段录制
+- [x] 本地转写 + 合并文字
+- [x] 双协议总结 + 模板
+- [x] 流水线调度 / 重试 / 导出 / 托盘
+
+实现验证：27 项 Rust 单元测试、严格 Clippy、Rust 格式检查、TypeScript 类型检查与前端生产构建通过；Tauri release 可执行文件与 MSI 已生成。NSIS 打包因从 GitHub 下载外部工具包超时而未完成。真实下载、直播、转写和云端总结仍依赖本机安装对应 sidecar、模型文件、网络及有效 API Key，应在目标环境按实际来源完成验收。

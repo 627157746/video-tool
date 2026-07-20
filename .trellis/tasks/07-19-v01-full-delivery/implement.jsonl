@@ -1,0 +1,3 @@
+{"file":"docs/PRODUCT_SPEC.md","reason":"Source-of-truth v0.1 product behavior, locked technical decisions, artifact layout, and delivery checklist."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"The stabilization changes span persisted Rust models, Tauri IPC contracts, frontend state, sidecar execution, and generated artifacts."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Status derivation, path validation, redaction, and refresh behavior must each have one shared owner instead of duplicated branches."}
