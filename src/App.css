@@ -796,6 +796,46 @@ button:disabled {
   font-size: 0.9rem;
 }
 
+.file-picker-field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.file-picker-field > span {
+  color: #cbd5e1;
+  font-size: 0.9rem;
+}
+
+.file-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.file-picker-row .btn {
+  flex: 0 0 auto;
+}
+
+.file-picker-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0.72rem 0.9rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.85rem;
+  background: rgba(2, 6, 23, 0.3);
+  color: #e2e8f0;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.85rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-picker-value.muted {
+  color: var(--muted);
+}
+
 .checkbox-row {
   display: flex;
   flex-wrap: wrap;

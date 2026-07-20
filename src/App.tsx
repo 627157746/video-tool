@@ -1,4 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -168,6 +169,7 @@ function App() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isBusy, setIsBusy] = useState(false);
+  const [isSelectingLocalFile, setIsSelectingLocalFile] = useState(false);
   const [deletingJobIds, setDeletingJobIds] = useState<Set<string>>(new Set());
   const [stoppingRecordingJobIds, setStoppingRecordingJobIds] = useState<
     Set<string>
@@ -187,6 +189,7 @@ function App() {
   const providerDraftsRef = useRef<ProviderProfileInput[]>([]);
   const settingsProxyRef = useRef("");
   const modalInitialFocusRef = useRef<HTMLInputElement | null>(null);
+  const localFilePickerButtonRef = useRef<HTMLButtonElement | null>(null);
   const createTriggerRef = useRef<HTMLElement | null>(null);
 
   const [formUrl, setFormUrl] = useState("");
@@ -564,7 +567,11 @@ function App() {
     if (!createMode) {
       return;
     }
-    modalInitialFocusRef.current?.focus();
+    if (createMode === "import") {
+      localFilePickerButtonRef.current?.focus();
+    } else {
+      modalInitialFocusRef.current?.focus();
+    }
     const backgroundElementStates = new Map<HTMLElement, boolean>();
     const makeBackgroundInert = () => {
       const backgroundElements = document.querySelectorAll<HTMLElement>(
@@ -643,6 +650,46 @@ function App() {
   function closeCreate() {
     setCreateMode(null);
     window.setTimeout(() => createTriggerRef.current?.focus(), 0);
+  }
+
+  async function handleSelectLocalFile() {
+    setErrorMessage(null);
+    setIsSelectingLocalFile(true);
+
+    try {
+      const selectedFilePath = await open({
+        title: "选择本地视频",
+        multiple: false,
+        directory: false,
+        filters: [
+          {
+            name: "视频文件",
+            extensions: [
+              "mp4",
+              "mkv",
+              "mov",
+              "avi",
+              "webm",
+              "flv",
+              "m4v",
+              "wmv",
+              "mpeg",
+              "mpg",
+              "ts",
+              "m2ts",
+            ],
+          },
+        ],
+      });
+
+      if (selectedFilePath) {
+        setFormLocalPath(selectedFilePath);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSelectingLocalFile(false);
+    }
   }
 
   async function submitCreate() {
@@ -1886,15 +1933,30 @@ function App() {
               )}
 
               {createMode === "import" && (
-                <label>
-                  <span>本地文件路径</span>
-                  <input
-                    ref={modalInitialFocusRef}
-                    value={formLocalPath}
-                    onChange={(event) => setFormLocalPath(event.target.value)}
-                    placeholder="D:/videos/example.mp4"
-                  />
-                </label>
+                <div className="file-picker-field">
+                  <span>本地视频文件</span>
+                  <div className="file-picker-row">
+                    <button
+                      ref={localFilePickerButtonRef}
+                      className="btn secondary"
+                      type="button"
+                      disabled={isBusy || isSelectingLocalFile}
+                      onClick={() => void handleSelectLocalFile()}
+                    >
+                      {isSelectingLocalFile
+                        ? "正在选择…"
+                        : formLocalPath
+                          ? "重新选择"
+                          : "选择文件"}
+                    </button>
+                    <div
+                      className={`file-picker-value${formLocalPath ? "" : " muted"}`}
+                      title={formLocalPath || "尚未选择文件"}
+                    >
+                      {formLocalPath || "尚未选择文件"}
+                    </div>
+                  </div>
+                </div>
               )}
 
               <label>
@@ -1989,7 +2051,11 @@ function App() {
               <button
                 className="btn"
                 type="button"
-                disabled={isBusy}
+                disabled={
+                  isBusy ||
+                  isSelectingLocalFile ||
+                  (createMode === "import" && !formLocalPath)
+                }
                 onClick={() => void submitCreate()}
               >
                 创建任务

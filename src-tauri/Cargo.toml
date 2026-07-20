@@ -26,3 +26,4 @@ zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
 fs2 = "0.4.3"
 reqwest = { version = "=0.12.15", default-features = false, features = ["json", "blocking", "socks", "rustls-tls"] }
 regex = "1.13.1"
+tauri-plugin-dialog = "2.7.2"
