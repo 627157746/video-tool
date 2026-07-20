@@ -139,3 +139,36 @@ Job Markdown 总结改为 react-markdown 渲染，并改为通栏大阅读区（
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: 转写语言下拉选择与任务级覆盖
+
+**Date**: 2026-07-20
+**Task**: 转写语言下拉选择与任务级覆盖
+**Branch**: `main`
+
+### Summary
+
+将设置页与创建任务表单的转写语言从自由输入改为下拉选择；PipelineOptions 新增 transcribe_language 字段，merge_pipeline 在创建任务时解析为有效值（任务未指定则回落全局 config），transcribe.rs 优先用任务级语言并保留全局回落；旧 source.json 通过 serde default 兼容。typecheck/cargo check/cargo test(35) 全通过。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3bda8aa` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
