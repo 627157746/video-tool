@@ -117,6 +117,33 @@ const STEP_STATUS_LABEL: Record<StepStatus, string> = {
   skipped: "跳过",
 };
 
+const PIPELINE_STEPS: JobStep[] = [
+  "ingest",
+  "transcribe",
+  "merge_transcript",
+  "summarize",
+];
+
+function getPipelineStepProgress(job: Job, step: JobStep) {
+  return (
+    job.step_statuses.find((progress) => progress.step === step) ?? {
+      step,
+      status: "pending" as const,
+      detail: "尚未运行，可随时手动执行",
+    }
+  );
+}
+
+function getStepActionLabel(status: StepStatus): string {
+  if (status === "running") {
+    return "运行中";
+  }
+  if (status === "pending" || status === "skipped") {
+    return "运行";
+  }
+  return "重试";
+}
+
 function formatTime(value: string): string {
   try {
     return new Date(value).toLocaleString();
@@ -1004,7 +1031,9 @@ function App() {
         setSummaryText("");
       }
       await runJob(jobId, step ?? null);
-      setStatusMessage(step ? `已重试步骤：${STEP_LABEL[step]}` : "任务已开始运行");
+      setStatusMessage(
+        step ? `已开始执行步骤：${STEP_LABEL[step]}` : "任务已开始运行",
+      );
       if (selectedJobIdRef.current === jobId) {
         await loadJobDetail(jobId, logNameRef.current, false);
       }
@@ -1553,29 +1582,39 @@ function App() {
                       <article className="card soft">
                         <h3>流水线</h3>
                         <div className="step-list">
-                          {selectedJob.step_statuses.map((step) => (
-                            <div key={step.step} className="step-row">
-                              <div>
-                                <strong>{STEP_LABEL[step.step]}</strong>
-                                <div className="muted small">
-                                  {step.detail || "—"}
+                          {PIPELINE_STEPS.map((stepName) => {
+                            const step = getPipelineStepProgress(
+                              selectedJob,
+                              stepName,
+                            );
+                            return (
+                              <div key={step.step} className="step-row">
+                                <div>
+                                  <strong>{STEP_LABEL[step.step]}</strong>
+                                  <div className="muted small">
+                                    {step.detail || "—"}
+                                  </div>
+                                </div>
+                                <div className="step-actions">
+                                  <span className={`pill step-${step.status}`}>
+                                    {STEP_STATUS_LABEL[step.status]}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="chip"
+                                    disabled={
+                                      isBusy || selectedJob.status === "running"
+                                    }
+                                    onClick={() =>
+                                      void handleRun(selectedJob.id, step.step)
+                                    }
+                                  >
+                                    {getStepActionLabel(step.status)}
+                                  </button>
                                 </div>
                               </div>
-                              <div className="step-actions">
-                                <span className={`pill step-${step.status}`}>
-                                  {STEP_STATUS_LABEL[step.status]}
-                                </span>
-                                <button
-                                  type="button"
-                                  className="chip"
-                                  disabled={isBusy || selectedJob.status === "running"}
-                                  onClick={() => void handleRun(selectedJob.id, step.step)}
-                                >
-                                  重试
-                                </button>
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                         <div className="pipeline-flags muted small">
                           自动转写：
