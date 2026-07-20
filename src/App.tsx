@@ -1,38 +1,88 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { openPath } from "@tauri-apps/plugin-opener";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  checkYtDlpUpdate,
   createDownloadJob,
   createImportJob,
   createLiveRecordJob,
+  deleteJob,
+  exportJob,
   getAppInfo,
   getConfig,
+  getJob,
+  getJobLog,
+  getJobSummary,
+  getJobTranscript,
   listJobs,
   openJobDirectory,
   probeSidecars,
+  runJob,
+  retryTranscriptSegment,
+  saveConfig,
+  selectJobSegments,
+  stopRecording,
+  testProvider,
 } from "./api";
 import type {
   AppConfigPublic,
   AppInfo,
-  JobListItem,
+  Job,
   JobKind,
+  JobListItem,
+  JobStatus,
+  JobStep,
+  ProviderProfileInput,
   SidecarStatus,
+  StepStatus,
+  SummaryTemplate,
 } from "./types";
 import "./App.css";
 
 type CreateMode = "download" | "live" | "import" | null;
 type MainView = "jobs" | "settings";
+type LogName =
+  | "download"
+  | "record"
+  | "transcribe"
+  | "merge_transcript"
+  | "summarize";
+
+const LOG_NAMES: LogName[] = [
+  "download",
+  "record",
+  "transcribe",
+  "merge_transcript",
+  "summarize",
+];
 
 const KIND_LABEL: Record<JobKind, string> = {
-  download: "下载",
+  download: "链接下载",
   live_record: "直播录制",
   import_local: "本地导入",
 };
 
-const STATUS_LABEL: Record<string, string> = {
+const STATUS_LABEL: Record<JobStatus, string> = {
   pending: "等待中",
   running: "运行中",
   succeeded: "成功",
   failed: "失败",
   cancelled: "已取消",
+};
+
+const STEP_LABEL: Record<JobStep, string> = {
+  ingest: "获取媒体",
+  transcribe: "转写",
+  merge_transcript: "合并字幕",
+  summarize: "AI 总结",
+};
+
+const STEP_STATUS_LABEL: Record<StepStatus, string> = {
+  pending: "等待",
+  running: "进行中",
+  succeeded: "完成",
+  failed: "失败",
+  skipped: "跳过",
 };
 
 function formatTime(value: string): string {
@@ -43,17 +93,101 @@ function formatTime(value: string): string {
   }
 }
 
+function formatProgress(value: number | undefined): string {
+  if (value == null || Number.isNaN(value)) {
+    return "0%";
+  }
+  return `${Math.max(0, Math.min(100, value)).toFixed(0)}%`;
+}
+
+function jobToListItem(job: Job): JobListItem {
+  return {
+    id: job.id,
+    status: job.status,
+    kind: job.source.kind,
+    title: job.source.title?.trim()
+      ? job.source.title
+      : job.source.url || job.source.local_path || job.id,
+    source_reference: job.source.url || job.source.local_path || "",
+    current_step: job.current_step,
+    progress: job.progress ?? 0,
+    error_message: job.error_message,
+    created_at: job.created_at,
+    updated_at: job.updated_at,
+  };
+}
+
+function mergeJobListSnapshots(
+  currentJobs: JobListItem[],
+  refreshedJobs: JobListItem[],
+): JobListItem[] {
+  const refreshedJobIds = new Set(refreshedJobs.map((job) => job.id));
+  const currentJobsById = new Map(currentJobs.map((job) => [job.id, job]));
+  const mergedJobs = refreshedJobs.map((refreshedJob) => {
+    const currentJob = currentJobsById.get(refreshedJob.id);
+    if (currentJob && currentJob.updated_at >= refreshedJob.updated_at) {
+      return currentJob;
+    }
+    return refreshedJob;
+  });
+  for (const currentJob of currentJobs) {
+    if (!refreshedJobIds.has(currentJob.id)) {
+      mergedJobs.push(currentJob);
+    }
+  }
+  return mergedJobs.sort((left, right) =>
+    right.created_at.localeCompare(left.created_at),
+  );
+}
+
+function resolveExistingDefaultId(
+  preferredId: string,
+  availableIds: string[],
+): string {
+  const normalizedPreferredId = preferredId.trim();
+  if (availableIds.includes(normalizedPreferredId)) {
+    return normalizedPreferredId;
+  }
+  return availableIds.find((availableId) => availableId.trim())?.trim() ?? "";
+}
+
 function App() {
   const [view, setView] = useState<MainView>("jobs");
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [config, setConfig] = useState<AppConfigPublic | null>(null);
   const [jobs, setJobs] = useState<JobListItem[]>([]);
   const [sidecars, setSidecars] = useState<SidecarStatus | null>(null);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [logName, setLogName] = useState<LogName>("download");
+  const [logText, setLogText] = useState("");
+  const [transcriptText, setTranscriptText] = useState("");
+  const [summaryText, setSummaryText] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isBusy, setIsBusy] = useState(false);
+  const [deletingJobIds, setDeletingJobIds] = useState<Set<string>>(new Set());
+  const [stoppingRecordingJobIds, setStoppingRecordingJobIds] = useState<
+    Set<string>
+  >(new Set());
+  const [isUpdatingSegmentSelection, setIsUpdatingSegmentSelection] =
+    useState(false);
   const [createMode, setCreateMode] = useState<CreateMode>(null);
+
+  const selectedJobIdRef = useRef<string | null>(null);
+  const selectedJobRef = useRef<Job | null>(null);
+  const logNameRef = useRef<LogName>("download");
+  const detailRequestVersionRef = useRef(0);
+  const logRequestVersionRef = useRef(0);
+  const refreshRequestVersionRef = useRef(0);
+  const deletedJobIdsRef = useRef<Set<string>>(new Set());
+  const segmentSelectionInFlightRef = useRef(false);
+  const providerDraftsRef = useRef<ProviderProfileInput[]>([]);
+  const settingsProxyRef = useRef("");
+  const modalInitialFocusRef = useRef<HTMLInputElement | null>(null);
+  const createTriggerRef = useRef<HTMLElement | null>(null);
 
   const [formUrl, setFormUrl] = useState("");
   const [formTitle, setFormTitle] = useState("");
@@ -61,33 +195,305 @@ function App() {
   const [formSegmentMinutes, setFormSegmentMinutes] = useState(30);
   const [autoTranscribe, setAutoTranscribe] = useState(true);
   const [autoSummarize, setAutoSummarize] = useState(false);
+  const [autoStart, setAutoStart] = useState(true);
+  const [formProviderId, setFormProviderId] = useState("");
+  const [formTemplateId, setFormTemplateId] = useState("");
 
-  const refresh = useCallback(async () => {
-    setErrorMessage(null);
+  const [settingsWorkspace, setSettingsWorkspace] = useState("");
+  const [settingsSegmentMinutes, setSettingsSegmentMinutes] = useState(30);
+  const [settingsAutoTranscribe, setSettingsAutoTranscribe] = useState(true);
+  const [settingsAutoSummarize, setSettingsAutoSummarize] = useState(false);
+  const [settingsProxy, setSettingsProxy] = useState("");
+  const [settingsMinDisk, setSettingsMinDisk] = useState(5);
+  const [settingsReconnect, setSettingsReconnect] = useState(3);
+  const [settingsMaxContextChars, setSettingsMaxContextChars] = useState(400000);
+  const [settingsTranscribeModel, setSettingsTranscribeModel] = useState("");
+  const [settingsTranscribeLanguage, setSettingsTranscribeLanguage] = useState("auto");
+  const [settingsDefaultProviderId, setSettingsDefaultProviderId] = useState("");
+  const [settingsDefaultTemplateId, setSettingsDefaultTemplateId] = useState("");
+  const [settingsYtDlp, setSettingsYtDlp] = useState("");
+  const [settingsFfmpeg, setSettingsFfmpeg] = useState("");
+  const [settingsFfprobe, setSettingsFfprobe] = useState("");
+  const [settingsStreamlink, setSettingsStreamlink] = useState("");
+  const [settingsTranscribe, setSettingsTranscribe] = useState("");
+  const [providerDrafts, setProviderDrafts] = useState<ProviderProfileInput[]>([]);
+  const [templateDrafts, setTemplateDrafts] = useState<SummaryTemplate[]>([]);
+
+  providerDraftsRef.current = providerDrafts;
+  settingsProxyRef.current = settingsProxy;
+
+  const applyConfigToSettings = useCallback((nextConfig: AppConfigPublic) => {
+    setConfig(nextConfig);
+    setSettingsWorkspace(nextConfig.workspace_dir);
+    setSettingsSegmentMinutes(nextConfig.default_segment_minutes);
+    setSettingsAutoTranscribe(nextConfig.default_auto_transcribe);
+    setSettingsAutoSummarize(nextConfig.default_auto_summarize);
+    setSettingsProxy(nextConfig.proxy_url ?? "");
+    setSettingsMinDisk(nextConfig.min_free_disk_gb);
+    setSettingsReconnect(nextConfig.live_reconnect_attempts);
+    setSettingsMaxContextChars(nextConfig.max_context_chars);
+    setSettingsTranscribeModel(nextConfig.transcribe_model ?? "");
+    setSettingsTranscribeLanguage(nextConfig.transcribe_language);
+    setSettingsDefaultProviderId(nextConfig.default_provider_profile_id ?? "");
+    setSettingsDefaultTemplateId(nextConfig.default_template_id ?? "");
+    setSettingsYtDlp(nextConfig.sidecar_paths.yt_dlp ?? "");
+    setSettingsFfmpeg(nextConfig.sidecar_paths.ffmpeg ?? "");
+    setSettingsFfprobe(nextConfig.sidecar_paths.ffprobe ?? "");
+    setSettingsStreamlink(nextConfig.sidecar_paths.streamlink ?? "");
+    setSettingsTranscribe(nextConfig.sidecar_paths.transcribe ?? "");
+    setProviderDrafts(nextConfig.providers.map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      protocol: provider.protocol === "anthropic" ? "anthropic" : "openai",
+      base_url: provider.base_url,
+      api_key: null,
+      api_key_env: provider.api_key_env ?? null,
+      default_model: provider.default_model,
+      extra_headers: provider.extra_headers,
+    })));
+    setTemplateDrafts(nextConfig.templates);
+    setFormSegmentMinutes(nextConfig.default_segment_minutes);
+    setAutoTranscribe(nextConfig.default_auto_transcribe);
+    setAutoSummarize(nextConfig.default_auto_summarize);
+    setFormProviderId(nextConfig.default_provider_profile_id ?? "");
+    setFormTemplateId(nextConfig.default_template_id ?? "");
+  }, []);
+
+  const clearSelectedJobState = useCallback(() => {
+    detailRequestVersionRef.current += 1;
+    logRequestVersionRef.current += 1;
+    selectedJobIdRef.current = null;
+    selectedJobRef.current = null;
+    setSelectedJobId(null);
+    setSelectedJob(null);
+    setLogText("");
+    setTranscriptText("");
+    setSummaryText("");
+  }, []);
+
+  const loadJobDetail = useCallback(
+    async (
+      jobId: string,
+      requestedLogName: LogName | null = null,
+      resetDisplay = true,
+    ) => {
+      const requestVersion = ++detailRequestVersionRef.current;
+      logRequestVersionRef.current += 1;
+      if (resetDisplay) {
+        selectedJobIdRef.current = jobId;
+        setSelectedJobId(jobId);
+        selectedJobRef.current = null;
+        setSelectedJob(null);
+        setLogText("正在加载…");
+        setTranscriptText("");
+        setSummaryText("");
+      }
+
+      try {
+        const job = await getJob(jobId);
+        if (
+          requestVersion !== detailRequestVersionRef.current ||
+          selectedJobIdRef.current !== jobId
+        ) {
+          return;
+        }
+
+        const preferredLog = resetDisplay
+          ? requestedLogName ??
+            (job.source.kind === "live_record" ? "record" : "download")
+          : logNameRef.current;
+        if (resetDisplay) {
+          logNameRef.current = preferredLog;
+          setLogName(preferredLog);
+        }
+        const [logResult, transcriptResult, summaryResult] =
+          await Promise.allSettled([
+            getJobLog(jobId, preferredLog),
+            getJobTranscript(jobId),
+            getJobSummary(jobId),
+          ]);
+        if (
+          requestVersion !== detailRequestVersionRef.current ||
+          selectedJobIdRef.current !== jobId ||
+          logNameRef.current !== preferredLog
+        ) {
+          return;
+        }
+
+        selectedJobRef.current = job;
+        setSelectedJob(job);
+        setLogText(
+          logResult.status === "fulfilled"
+            ? logResult.value || "（暂无日志）"
+            : "（日志读取失败）",
+        );
+        setTranscriptText(
+          transcriptResult.status === "fulfilled" ? transcriptResult.value : "",
+        );
+        setSummaryText(
+          summaryResult.status === "fulfilled" ? summaryResult.value : "",
+        );
+
+        const failedResult = [logResult, transcriptResult, summaryResult].find(
+          (result) => result.status === "rejected",
+        );
+        if (failedResult?.status === "rejected") {
+          setErrorMessage(
+            failedResult.reason instanceof Error
+              ? failedResult.reason.message
+              : String(failedResult.reason),
+          );
+        }
+      } catch (error) {
+        if (
+          requestVersion === detailRequestVersionRef.current &&
+          selectedJobIdRef.current === jobId
+        ) {
+          setSelectedJob(null);
+          selectedJobRef.current = null;
+          setLogText("");
+          setTranscriptText("");
+          setSummaryText("");
+          setErrorMessage(error instanceof Error ? error.message : String(error));
+        }
+      }
+    },
+    [],
+  );
+
+  const reloadLog = useCallback(async (jobId: string, name: LogName) => {
+    detailRequestVersionRef.current += 1;
+    const requestVersion = ++logRequestVersionRef.current;
+    logNameRef.current = name;
+    setLogName(name);
     try {
-      const [nextInfo, nextConfig, nextJobs, nextSidecars] = await Promise.all([
-        getAppInfo(),
-        getConfig(),
-        listJobs(),
-        probeSidecars(),
-      ]);
-      setAppInfo(nextInfo);
-      setConfig(nextConfig);
-      setJobs(nextJobs);
-      setSidecars(nextSidecars);
-      setFormSegmentMinutes(nextConfig.default_segment_minutes);
-      setAutoTranscribe(nextConfig.default_auto_transcribe);
-      setAutoSummarize(nextConfig.default_auto_summarize);
+      const log = await getJobLog(jobId, name);
+      if (
+        requestVersion === logRequestVersionRef.current &&
+        selectedJobIdRef.current === jobId &&
+        logNameRef.current === name
+      ) {
+        setLogText(log || "（暂无日志）");
+      }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setIsLoading(false);
+      if (
+        requestVersion === logRequestVersionRef.current &&
+        selectedJobIdRef.current === jobId
+      ) {
+        setLogText("（日志读取失败）");
+        setErrorMessage(error instanceof Error ? error.message : String(error));
+      }
     }
   }, []);
 
+  const refresh = useCallback(
+    async (preserveSettingsDrafts = false) => {
+      const refreshRequestVersion = ++refreshRequestVersionRef.current;
+      setErrorMessage(null);
+      try {
+        const [nextInfo, nextConfig, nextJobs, nextSidecars] = await Promise.all([
+          getAppInfo(),
+          getConfig(),
+          listJobs(),
+          probeSidecars(),
+        ]);
+        if (refreshRequestVersion !== refreshRequestVersionRef.current) {
+          return;
+        }
+        const visibleNextJobs = nextJobs.filter(
+          (job) => !deletedJobIdsRef.current.has(job.id),
+        );
+        setAppInfo(nextInfo);
+        if (preserveSettingsDrafts) {
+          setConfig(nextConfig);
+        } else {
+          applyConfigToSettings(nextConfig);
+        }
+        setJobs((currentJobs) =>
+          mergeJobListSnapshots(currentJobs, visibleNextJobs),
+        );
+        setSidecars(nextSidecars);
+        const currentJobId = selectedJobIdRef.current;
+        if (
+          currentJobId &&
+          visibleNextJobs.some((job) => job.id === currentJobId)
+        ) {
+          await loadJobDetail(currentJobId, logNameRef.current, false);
+        } else if (currentJobId) {
+          clearSelectedJobState();
+        }
+      } catch (error) {
+        if (refreshRequestVersion === refreshRequestVersionRef.current) {
+          setErrorMessage(error instanceof Error ? error.message : String(error));
+        }
+      } finally {
+        if (refreshRequestVersion === refreshRequestVersionRef.current) {
+          setIsLoading(false);
+        }
+      }
+    },
+    [applyConfigToSettings, clearSelectedJobState, loadJobDetail],
+  );
+
   useEffect(() => {
-    void refresh();
+    void refresh(false);
   }, [refresh]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let disposeListener: (() => void) | undefined;
+    void listen<Job>("job-updated", (event) => {
+      const job = event.payload;
+      if (deletedJobIdsRef.current.has(job.id)) {
+        return;
+      }
+      setJobs((previous) => {
+        const item = jobToListItem(job);
+        const exists = previous.some((entry) => entry.id === job.id);
+        if (!exists) {
+          return [item, ...previous];
+        }
+        return previous.map((entry) => (entry.id === job.id ? item : entry));
+      });
+      if (selectedJobIdRef.current === job.id) {
+        detailRequestVersionRef.current += 1;
+        selectedJobRef.current = job;
+        setSelectedJob(job);
+        void reloadLog(job.id, logNameRef.current);
+        if (job.status !== "running") {
+          void loadJobDetail(job.id, logNameRef.current, false);
+        }
+      }
+    })
+      .then((dispose) => {
+        if (cancelled) {
+          dispose();
+        } else {
+          disposeListener = dispose;
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setErrorMessage(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+      disposeListener?.();
+    };
+  }, [loadJobDetail, reloadLog]);
+
+  useEffect(() => {
+    if (selectedJob?.status !== "running" || !selectedJobId) {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      void loadJobDetail(selectedJobId, logNameRef.current, false);
+    }, 3_000);
+    return () => window.clearInterval(interval);
+  }, [loadJobDetail, selectedJob?.status, selectedJobId]);
 
   const filteredJobs = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -98,8 +504,15 @@ function App() {
       const haystack = [
         job.id,
         job.title,
+        job.source_reference,
         job.status,
+        STATUS_LABEL[job.status],
         job.kind,
+        KIND_LABEL[job.kind],
+        job.created_at,
+        job.updated_at,
+        formatTime(job.created_at),
+        formatTime(job.updated_at),
         job.error_message ?? "",
       ]
         .join(" ")
@@ -108,6 +521,105 @@ function App() {
     });
   }, [jobs, searchQuery]);
 
+  const stats = useMemo(() => {
+    return {
+      total: jobs.length,
+      running: jobs.filter((job) => job.status === "running").length,
+      failed: jobs.filter((job) => job.status === "failed").length,
+      succeeded: jobs.filter((job) => job.status === "succeeded").length,
+    };
+  }, [jobs]);
+
+  const providerDraftsAreDirty = useMemo(() => {
+    if (!config) {
+      return false;
+    }
+    const persistedProfiles = config.providers.map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      protocol: provider.protocol === "anthropic" ? "anthropic" : "openai",
+      base_url: provider.base_url,
+      api_key_env: provider.api_key_env ?? null,
+      default_model: provider.default_model,
+      extra_headers: provider.extra_headers,
+      has_new_api_key: false,
+    }));
+    const draftProfiles = providerDrafts.map((provider) => ({
+      id: provider.id,
+      name: provider.name,
+      protocol: provider.protocol,
+      base_url: provider.base_url,
+      api_key_env: provider.api_key_env ?? null,
+      default_model: provider.default_model,
+      extra_headers: provider.extra_headers,
+      has_new_api_key: Boolean(provider.api_key?.trim()),
+    }));
+    return (
+      settingsProxy !== (config.proxy_url ?? "") ||
+      JSON.stringify(persistedProfiles) !== JSON.stringify(draftProfiles)
+    );
+  }, [config, providerDrafts, settingsProxy]);
+
+  useEffect(() => {
+    if (!createMode) {
+      return;
+    }
+    modalInitialFocusRef.current?.focus();
+    const backgroundElementStates = new Map<HTMLElement, boolean>();
+    const makeBackgroundInert = () => {
+      const backgroundElements = document.querySelectorAll<HTMLElement>(
+        ".topbar, .banner-row, .content",
+      );
+      backgroundElements.forEach((element) => {
+        if (!backgroundElementStates.has(element)) {
+          backgroundElementStates.set(element, element.inert);
+        }
+        element.inert = true;
+      });
+    };
+    makeBackgroundInert();
+    const backgroundObserver = new MutationObserver(makeBackgroundInert);
+    backgroundObserver.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeCreate();
+        return;
+      }
+      if (event.key !== "Tab") {
+        return;
+      }
+      const modal = document.querySelector<HTMLElement>(".modal");
+      const focusableElements = Array.from(
+        modal?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+      if (focusableElements.length === 0) {
+        return;
+      }
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements[focusableElements.length - 1];
+      if (event.shiftKey && document.activeElement === firstElement) {
+        event.preventDefault();
+        lastElement.focus();
+      } else if (!event.shiftKey && document.activeElement === lastElement) {
+        event.preventDefault();
+        firstElement.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      backgroundObserver.disconnect();
+      backgroundElementStates.forEach((wasInert, element) => {
+        element.inert = wasInert;
+      });
+    };
+  }, [createMode]);
+
   function resetCreateForm() {
     setFormUrl("");
     setFormTitle("");
@@ -115,13 +627,22 @@ function App() {
     setFormSegmentMinutes(config?.default_segment_minutes ?? 30);
     setAutoTranscribe(config?.default_auto_transcribe ?? true);
     setAutoSummarize(config?.default_auto_summarize ?? false);
+    setAutoStart(true);
+    setFormProviderId(config?.default_provider_profile_id ?? "");
+    setFormTemplateId(config?.default_template_id ?? "");
   }
 
   function openCreate(mode: CreateMode) {
+    createTriggerRef.current = document.activeElement as HTMLElement | null;
     resetCreateForm();
     setCreateMode(mode);
     setStatusMessage(null);
     setErrorMessage(null);
+  }
+
+  function closeCreate() {
+    setCreateMode(null);
+    window.setTimeout(() => createTriggerRef.current?.focus(), 0);
   }
 
   async function submitCreate() {
@@ -131,62 +652,410 @@ function App() {
 
     setErrorMessage(null);
     setStatusMessage(null);
+    setIsBusy(true);
 
     const pipeline = {
       auto_transcribe: autoTranscribe,
       auto_summarize: autoSummarize,
-      provider_profile_id: config?.default_provider_profile_id ?? null,
-      template_id: config?.default_template_id ?? null,
+      provider_profile_id: formProviderId || null,
+      template_id: formTemplateId || null,
     };
 
     try {
+      let created: Job;
       if (createMode === "download") {
-        await createDownloadJob({
+        created = await createDownloadJob({
           url: formUrl,
           title: formTitle || undefined,
           pipeline,
+          auto_start: autoStart,
         });
       } else if (createMode === "live") {
-        await createLiveRecordJob({
+        created = await createLiveRecordJob({
           url: formUrl,
           title: formTitle || undefined,
           segment_minutes: formSegmentMinutes,
           pipeline,
+          auto_start: autoStart,
         });
       } else {
-        await createImportJob({
+        created = await createImportJob({
           local_path: formLocalPath,
           title: formTitle || undefined,
           pipeline,
+          auto_start: autoStart,
         });
       }
 
-      setCreateMode(null);
-      setStatusMessage("任务已创建（骨架阶段：仅落盘 Job 目录，尚未真正下载/转写）");
+      closeCreate();
+      setStatusMessage(
+        autoStart
+          ? "任务已创建并开始执行（下载为最佳努力，失败请看日志）"
+          : "任务已创建，可在详情中手动运行",
+      );
+      await loadJobDetail(created.id);
       await refresh();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
     }
   }
 
   async function handleOpenDirectory(jobId: string) {
     try {
       const path = await openJobDirectory(jobId);
-      setStatusMessage(`任务目录：${path}`);
+      await openPath(path);
+      setStatusMessage(`已打开任务目录：${path}`);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     }
   }
 
+  async function handleDeleteJob(job: JobListItem) {
+    const confirmed = window.confirm(
+      `确定永久删除任务“${job.title}”吗？\n\n任务目录中的媒体、字幕、总结和日志都会被删除，且无法恢复。`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    refreshRequestVersionRef.current += 1;
+    setDeletingJobIds((currentJobIds) => {
+      const nextJobIds = new Set(currentJobIds);
+      nextJobIds.add(job.id);
+      return nextJobIds;
+    });
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    try {
+      await deleteJob(job.id);
+      deletedJobIdsRef.current.add(job.id);
+      setJobs((currentJobs) =>
+        currentJobs.filter((currentJob) => currentJob.id !== job.id),
+      );
+      if (selectedJobIdRef.current === job.id) {
+        clearSelectedJobState();
+      }
+      setStatusMessage(`任务已删除：${job.title}`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDeletingJobIds((currentJobIds) => {
+        const nextJobIds = new Set(currentJobIds);
+        nextJobIds.delete(job.id);
+        return nextJobIds;
+      });
+    }
+  }
+
+  async function handleStopRecording(jobId: string) {
+    setStoppingRecordingJobIds((currentJobIds) => {
+      const nextJobIds = new Set(currentJobIds);
+      nextJobIds.add(jobId);
+      return nextJobIds;
+    });
+    try {
+      await stopRecording(jobId);
+      setStatusMessage("已发送停止录制请求；正在收尾并合并已有分段");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setStoppingRecordingJobIds((currentJobIds) => {
+        const nextJobIds = new Set(currentJobIds);
+        nextJobIds.delete(jobId);
+        return nextJobIds;
+      });
+    }
+  }
+
+  async function handleExport(jobId: string) {
+    setIsBusy(true);
+    try {
+      const path = await exportJob(jobId);
+      setStatusMessage(`任务包已导出：${path}`);
+      await openPath(path);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleToggleSegment(job: Job, segmentId: string) {
+    if (job.status === "running" || segmentSelectionInFlightRef.current) {
+      return;
+    }
+    const selectedIds = job.selected_segment_ids.includes(segmentId)
+      ? job.selected_segment_ids.filter((id) => id !== segmentId)
+      : [...job.selected_segment_ids, segmentId];
+    segmentSelectionInFlightRef.current = true;
+    setIsUpdatingSegmentSelection(true);
+    try {
+      const updated = await selectJobSegments(job.id, selectedIds);
+      if (selectedJobIdRef.current === job.id) {
+        selectedJobRef.current = updated;
+        setSelectedJob(updated);
+        setTranscriptText("");
+        setSummaryText("");
+        setStatusMessage("选段范围已更新；请重跑“合并字幕”后再总结");
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      segmentSelectionInFlightRef.current = false;
+      setIsUpdatingSegmentSelection(false);
+    }
+  }
+
+  async function handleRetrySegment(jobId: string, segmentId: string) {
+    setIsBusy(true);
+    try {
+      setTranscriptText("");
+      setSummaryText("");
+      await retryTranscriptSegment(jobId, segmentId);
+      setStatusMessage(`已开始重试转写分段：${segmentId}`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleRun(jobId: string, step?: JobStep | null) {
+    setIsBusy(true);
+    setErrorMessage(null);
+    try {
+      if (!step || step === "ingest" || step === "transcribe") {
+        setTranscriptText("");
+        setSummaryText("");
+      } else if (step === "merge_transcript" || step === "summarize") {
+        setSummaryText("");
+      }
+      await runJob(jobId, step ?? null);
+      setStatusMessage(step ? `已重试步骤：${STEP_LABEL[step]}` : "任务已开始运行");
+      if (selectedJobIdRef.current === jobId) {
+        await loadJobDetail(jobId, logNameRef.current, false);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleSaveSettings() {
+    refreshRequestVersionRef.current += 1;
+    setIsBusy(true);
+    setErrorMessage(null);
+    try {
+      const previousWorkspace = config?.workspace_dir;
+      const normalizedProviderDrafts = providerDrafts.map((provider) => ({
+        ...provider,
+        id: provider.id.trim(),
+      }));
+      const normalizedTemplateDrafts = templateDrafts.map((template) => ({
+        ...template,
+        id: template.id.trim(),
+      }));
+      const defaultProviderProfileId = resolveExistingDefaultId(
+        settingsDefaultProviderId,
+        normalizedProviderDrafts.map((provider) => provider.id),
+      );
+      const defaultTemplateId = resolveExistingDefaultId(
+        settingsDefaultTemplateId,
+        normalizedTemplateDrafts.map((template) => template.id),
+      );
+      setSettingsDefaultProviderId(defaultProviderProfileId);
+      setSettingsDefaultTemplateId(defaultTemplateId);
+      const next = await saveConfig({
+        workspace_dir: settingsWorkspace,
+        default_segment_minutes: settingsSegmentMinutes,
+        default_auto_transcribe: settingsAutoTranscribe,
+        default_auto_summarize: settingsAutoSummarize,
+        proxy_url: settingsProxy,
+        min_free_disk_gb: settingsMinDisk,
+        live_reconnect_attempts: settingsReconnect,
+        max_context_chars: settingsMaxContextChars,
+        transcribe_model: settingsTranscribeModel,
+        transcribe_language: settingsTranscribeLanguage,
+        default_provider_profile_id: defaultProviderProfileId,
+        default_template_id: defaultTemplateId,
+        sidecar_paths: {
+          yt_dlp: settingsYtDlp || null,
+          ffmpeg: settingsFfmpeg || null,
+          ffprobe: settingsFfprobe || null,
+          streamlink: settingsStreamlink || null,
+          transcribe: settingsTranscribe || null,
+        },
+        providers: normalizedProviderDrafts,
+        templates: normalizedTemplateDrafts,
+      });
+      applyConfigToSettings(next);
+      if (previousWorkspace && previousWorkspace !== next.workspace_dir) {
+        setJobs([]);
+        clearSelectedJobState();
+        const nextJobs = await listJobs();
+        setJobs(nextJobs);
+      }
+      const nextSidecars = await probeSidecars();
+      setSidecars(nextSidecars);
+      setStatusMessage("设置已保存");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  function handleProviderIdChange(
+    providerIndex: number,
+    previousProviderId: string,
+    nextProviderId: string,
+  ) {
+    setProviderDrafts((providers) =>
+      providers.map((provider, currentIndex) =>
+        currentIndex === providerIndex
+          ? { ...provider, id: nextProviderId }
+          : provider,
+      ),
+    );
+    if (settingsDefaultProviderId === previousProviderId) {
+      setSettingsDefaultProviderId(nextProviderId);
+    }
+  }
+
+  function handleDeleteProvider(providerIndex: number) {
+    const remainingProviders = providerDrafts.filter(
+      (_, currentIndex) => currentIndex !== providerIndex,
+    );
+    setProviderDrafts(remainingProviders);
+    setSettingsDefaultProviderId((currentDefaultId) =>
+      resolveExistingDefaultId(
+        currentDefaultId,
+        remainingProviders.map((provider) => provider.id),
+      ),
+    );
+  }
+
+  function handleTemplateIdChange(
+    templateIndex: number,
+    previousTemplateId: string,
+    nextTemplateId: string,
+  ) {
+    setTemplateDrafts((templates) =>
+      templates.map((template, currentIndex) =>
+        currentIndex === templateIndex
+          ? { ...template, id: nextTemplateId }
+          : template,
+      ),
+    );
+    if (settingsDefaultTemplateId === previousTemplateId) {
+      setSettingsDefaultTemplateId(nextTemplateId);
+    }
+  }
+
+  function handleDeleteTemplate(templateIndex: number) {
+    const remainingTemplates = templateDrafts.filter(
+      (_, currentIndex) => currentIndex !== templateIndex,
+    );
+    setTemplateDrafts(remainingTemplates);
+    setSettingsDefaultTemplateId((currentDefaultId) =>
+      resolveExistingDefaultId(
+        currentDefaultId,
+        remainingTemplates.map((template) => template.id),
+      ),
+    );
+  }
+
+  async function handleTestProvider(providerId: string) {
+    if (providerDraftsAreDirty) {
+      setErrorMessage("Provider 设置有未保存修改，请先保存后再测试连通");
+      return;
+    }
+    const getCurrentDraftRevision = () =>
+      JSON.stringify({
+        providers: providerDraftsRef.current,
+        proxyUrl: settingsProxyRef.current,
+      });
+    const testedDraftRevision = getCurrentDraftRevision();
+    setIsBusy(true);
+    try {
+      const message = await testProvider(providerId);
+      const currentDraftRevision = getCurrentDraftRevision();
+      if (testedDraftRevision === currentDraftRevision) {
+        setStatusMessage(message);
+      } else {
+        setStatusMessage("Provider 设置在测试期间已修改，已忽略过期测试结果");
+      }
+    } catch (error) {
+      if (testedDraftRevision === getCurrentDraftRevision()) {
+        setErrorMessage(error instanceof Error ? error.message : String(error));
+      } else {
+        setStatusMessage("Provider 设置在测试期间已修改，已忽略过期测试结果");
+      }
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleCheckYtDlp() {
+    setIsBusy(true);
+    try {
+      const message = await checkYtDlpUpdate();
+      setStatusMessage(message);
+      const nextSidecars = await probeSidecars();
+      setSidecars(nextSidecars);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  function handleLogTabNavigation(
+    jobId: string,
+    currentLogName: LogName,
+    pressedKey: string,
+  ): boolean {
+    const currentIndex = LOG_NAMES.indexOf(currentLogName);
+    let nextIndex: number;
+    switch (pressedKey) {
+      case "ArrowLeft":
+        nextIndex = (currentIndex - 1 + LOG_NAMES.length) % LOG_NAMES.length;
+        break;
+      case "ArrowRight":
+        nextIndex = (currentIndex + 1) % LOG_NAMES.length;
+        break;
+      case "Home":
+        nextIndex = 0;
+        break;
+      case "End":
+        nextIndex = LOG_NAMES.length - 1;
+        break;
+      default:
+        return false;
+    }
+
+    const nextLogName = LOG_NAMES[nextIndex];
+    document.getElementById(`log-tab-${nextLogName}`)?.focus();
+    void reloadLog(jobId, nextLogName);
+    return true;
+  }
+
   return (
     <div className="app-shell">
+      <div className="ambient ambient-a" />
+      <div className="ambient ambient-b" />
+
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark">VT</div>
           <div>
             <div className="brand-title">{appInfo?.name ?? "video-tool"}</div>
             <div className="brand-subtitle">
-              {appInfo?.description ?? "任务中心骨架"} · v
+              {appInfo?.description ?? "本地视频工具"} · v
               {appInfo?.version ?? "0.1.0"}
             </div>
           </div>
@@ -210,13 +1079,18 @@ function App() {
         </nav>
 
         <div className="top-actions">
-          <button className="btn secondary" onClick={() => void refresh()} type="button">
+          <button
+            className="btn secondary"
+            onClick={() => void refresh(true)}
+            type="button"
+            disabled={isBusy}
+          >
             刷新
           </button>
-          <button className="btn" onClick={() => openCreate("download")} type="button">
-            新建下载
+          <button className="btn ghost" onClick={() => openCreate("download")} type="button">
+            下载链接
           </button>
-          <button className="btn" onClick={() => openCreate("live")} type="button">
+          <button className="btn ghost" onClick={() => openCreate("live")} type="button">
             录制直播
           </button>
           <button className="btn" onClick={() => openCreate("import")} type="button">
@@ -227,117 +1101,655 @@ function App() {
 
       {(errorMessage || statusMessage) && (
         <div className="banner-row">
-          {errorMessage && <div className="banner error">{errorMessage}</div>}
-          {statusMessage && <div className="banner ok">{statusMessage}</div>}
+          {errorMessage && (
+            <div className="banner error" role="alert">
+              <span>{errorMessage}</span>
+              <button
+                type="button"
+                className="banner-close"
+                onClick={() => setErrorMessage(null)}
+              >
+                关闭
+              </button>
+            </div>
+          )}
+          {statusMessage && (
+            <div className="banner ok" role="status" aria-live="polite">
+              <span>{statusMessage}</span>
+              <button
+                type="button"
+                className="banner-close"
+                onClick={() => setStatusMessage(null)}
+              >
+                关闭
+              </button>
+            </div>
+          )}
         </div>
       )}
 
       <main className="content">
         {view === "jobs" ? (
-          <section className="panel">
-            <div className="panel-header">
+          <>
+            <section className="hero-strip">
               <div>
                 <h1>任务中心</h1>
                 <p className="muted">
-                  统一 Job 列表。当前为初始化骨架：可创建任务并生成 `workspace/jobs/&lt;id&gt;/`。
+                  统一管理下载、直播、本地转写与 AI 总结。媒体始终留在本机，
+                  仅总结文本出网。下载为<strong>最佳努力</strong>，失败请看任务日志。
                 </p>
               </div>
-              <input
-                className="search"
-                placeholder="搜索标题 / URL / 状态 / ID"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-              />
-            </div>
+              <div className="stat-grid">
+                <div className="stat-card">
+                  <span className="stat-label">全部</span>
+                  <strong>{stats.total}</strong>
+                </div>
+                <div className="stat-card running">
+                  <span className="stat-label">运行中</span>
+                  <strong>{stats.running}</strong>
+                </div>
+                <div className="stat-card ok">
+                  <span className="stat-label">成功</span>
+                  <strong>{stats.succeeded}</strong>
+                </div>
+                <div className="stat-card bad">
+                  <span className="stat-label">失败</span>
+                  <strong>{stats.failed}</strong>
+                </div>
+              </div>
+            </section>
 
-            {isLoading ? (
-              <div className="empty">加载中…</div>
-            ) : filteredJobs.length === 0 ? (
-              <div className="empty">
-                暂无任务。用右上角三个入口创建第一个 Job。
-              </div>
-            ) : (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>标题</th>
-                      <th>类型</th>
-                      <th>状态</th>
-                      <th>当前步骤</th>
-                      <th>创建时间</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+            <div className="jobs-layout">
+              <section className="panel list-panel">
+                <div className="panel-header">
+                  <div>
+                    <h2>任务列表</h2>
+                    <p className="muted small">点击任务查看步骤、日志与重试</p>
+                  </div>
+                  <input
+                    className="search"
+                    aria-label="搜索任务"
+                    placeholder="搜索标题 / URL / 状态 / ID"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                  />
+                </div>
+
+                {isLoading ? (
+                  <div className="empty">加载中…</div>
+                ) : filteredJobs.length === 0 ? (
+                  <div className="empty empty-card">
+                    <div className="empty-icon">◎</div>
+                    <h3>还没有任务</h3>
+                    <p>从右上角创建下载、直播或本地导入，媒体会写入工作区 jobs 目录。</p>
+                    <div className="empty-actions">
+                      <button className="btn" type="button" onClick={() => openCreate("download")}>
+                        新建下载
+                      </button>
+                      <button
+                        className="btn secondary"
+                        type="button"
+                        onClick={() => openCreate("import")}
+                      >
+                        导入本地
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="job-list">
                     {filteredJobs.map((job) => (
-                      <tr key={job.id}>
-                        <td>
+                      <article
+                        key={job.id}
+                        className={
+                          selectedJobId === job.id
+                            ? "job-card selected"
+                            : "job-card"
+                        }
+                      >
+                        <button
+                          className="job-card-select"
+                          type="button"
+                          onClick={() => void loadJobDetail(job.id)}
+                        >
+                          <div className="job-card-top">
+                            <span className={`pill kind-${job.kind}`}>
+                              {KIND_LABEL[job.kind]}
+                            </span>
+                            <span className={`pill status-${job.status}`}>
+                              {STATUS_LABEL[job.status]}
+                            </span>
+                          </div>
                           <div className="job-title">{job.title}</div>
-                          <div className="mono muted">{job.id}</div>
-                          {job.error_message && (
-                            <div className="error-text">{job.error_message}</div>
-                          )}
-                        </td>
-                        <td>{KIND_LABEL[job.kind]}</td>
-                        <td>
-                          <span className={`pill status-${job.status}`}>
-                            {STATUS_LABEL[job.status] ?? job.status}
-                          </span>
-                        </td>
-                        <td className="mono">{job.current_step ?? "-"}</td>
-                        <td>{formatTime(job.created_at)}</td>
-                        <td>
-                          <button
-                            className="btn secondary small"
-                            type="button"
-                            onClick={() => void handleOpenDirectory(job.id)}
+                          <div
+                            className="progress-track"
+                            role="progressbar"
+                            aria-label={`${job.title} 进度`}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                            aria-valuenow={Math.max(
+                              0,
+                              Math.min(100, job.progress ?? 0),
+                            )}
                           >
-                            目录路径
+                            <div
+                              className="progress-fill"
+                              style={{ width: formatProgress(job.progress) }}
+                            />
+                          </div>
+                          <div className="job-card-meta">
+                            <span>{formatProgress(job.progress)}</span>
+                            <span>
+                              {job.current_step
+                                ? STEP_LABEL[job.current_step]
+                                : "—"}
+                            </span>
+                            <span>{formatTime(job.created_at)}</span>
+                          </div>
+                          {job.error_message && (
+                            <div className="error-text clamp">{job.error_message}</div>
+                          )}
+                        </button>
+                        <div className="job-card-actions">
+                          <button
+                            className="btn danger small"
+                            type="button"
+                            disabled={
+                              job.status === "running" ||
+                              deletingJobIds.has(job.id)
+                            }
+                            aria-label={`删除任务：${job.title}`}
+                            title={
+                              job.status === "running"
+                                ? "运行中的任务不能删除"
+                                : "永久删除任务及全部产物"
+                            }
+                            onClick={() => void handleDeleteJob(job)}
+                          >
+                            {deletingJobIds.has(job.id) ? "删除中…" : "删除"}
                           </button>
-                        </td>
-                      </tr>
+                        </div>
+                      </article>
                     ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
+                  </div>
+                )}
+              </section>
+
+              <section className="panel detail-panel">
+                {!selectedJob ? (
+                  <div className="empty">
+                    <div className="empty-icon">⌘</div>
+                    <h3>选择一个任务</h3>
+                    <p className="muted">查看流水线步骤、媒体产物与完整日志</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="detail-header">
+                      <div>
+                        <div className="detail-kicker">
+                          {KIND_LABEL[selectedJob.source.kind]} ·{" "}
+                          <span className={`pill status-${selectedJob.status}`}>
+                            {STATUS_LABEL[selectedJob.status]}
+                          </span>
+                        </div>
+                        <h2>{selectedJob.source.title || selectedJob.source.url || selectedJob.source.local_path || selectedJob.id}</h2>
+                        <div className="mono muted small">{selectedJob.id}</div>
+                      </div>
+                      <div className="detail-actions">
+                        {selectedJob.source.kind === "live_record" &&
+                          selectedJob.live_capture_active && (
+                            <button
+                              className="btn danger"
+                              type="button"
+                              disabled={
+                                stoppingRecordingJobIds.has(selectedJob.id) ||
+                                selectedJob.stop_requested
+                              }
+                              onClick={() => void handleStopRecording(selectedJob.id)}
+                            >
+                              {selectedJob.stop_requested ||
+                              stoppingRecordingJobIds.has(selectedJob.id)
+                                ? "正在停止"
+                                : "停止录制"}
+                            </button>
+                          )}
+                        <button
+                          className="btn"
+                          type="button"
+                          disabled={isBusy || selectedJob.status === "running"}
+                          onClick={() => void handleRun(selectedJob.id)}
+                        >
+                          {selectedJob.status === "pending" ? "开始运行" : "重新运行"}
+                        </button>
+                        <button
+                          className="btn secondary"
+                          type="button"
+                          disabled={isBusy || selectedJob.status === "running"}
+                          onClick={() => void handleExport(selectedJob.id)}
+                        >
+                          导出任务包
+                        </button>
+                        <button
+                          className="btn secondary"
+                          type="button"
+                          onClick={() => void handleOpenDirectory(selectedJob.id)}
+                        >
+                          打开目录
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="detail-grid">
+                      <article className="card soft">
+                        <h3>来源</h3>
+                        <dl className="meta-list">
+                          <div>
+                            <dt>URL</dt>
+                            <dd className="mono">
+                              {selectedJob.source.url || "—"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>本地路径</dt>
+                            <dd className="mono">
+                              {selectedJob.source.local_path || "—"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>进度</dt>
+                            <dd>{formatProgress(selectedJob.progress)}</dd>
+                          </div>
+                          <div>
+                            <dt>媒体文件</dt>
+                            <dd>
+                              {selectedJob.media_files?.length
+                                ? selectedJob.media_files.join(", ")
+                                : "—"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>工具</dt>
+                            <dd className="mono small">
+                              {selectedJob.tool_path || "—"}
+                              {selectedJob.tool_version
+                                ? ` (${selectedJob.tool_version})`
+                                : ""}
+                            </dd>
+                          </div>
+                        </dl>
+                      </article>
+
+                      <article className="card soft">
+                        <h3>流水线</h3>
+                        <div className="step-list">
+                          {selectedJob.step_statuses.map((step) => (
+                            <div key={step.step} className="step-row">
+                              <div>
+                                <strong>{STEP_LABEL[step.step]}</strong>
+                                <div className="muted small">
+                                  {step.detail || "—"}
+                                </div>
+                              </div>
+                              <div className="step-actions">
+                                <span className={`pill step-${step.status}`}>
+                                  {STEP_STATUS_LABEL[step.status]}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="chip"
+                                  disabled={isBusy || selectedJob.status === "running"}
+                                  onClick={() => void handleRun(selectedJob.id, step.step)}
+                                >
+                                  重试
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="pipeline-flags muted small">
+                          自动转写：
+                          {selectedJob.pipeline.auto_transcribe ? "开" : "关"} ·
+                          自动总结：
+                          {selectedJob.pipeline.auto_summarize ? "开" : "关"}
+                        </div>
+                      </article>
+                    </div>
+
+                    {selectedJob.transcript_segments.length > 0 && (
+                      <article className="card soft segment-card">
+                        <div className="log-header">
+                          <div>
+                            <h3>总结选段</h3>
+                            <p className="muted small">
+                              取消不需要的分段后，依次重试“合并字幕”和“AI 总结”。
+                            </p>
+                          </div>
+                          <span className="pill">
+                            已选 {selectedJob.selected_segment_ids.length} / {selectedJob.transcript_segments.length}
+                          </span>
+                        </div>
+                        <div className="segment-list">
+                          {selectedJob.transcript_segments.map((segment) => (
+                            <div key={segment.id} className="segment-row">
+                              <input
+                                type="checkbox"
+                                aria-label={`选择转写分段 ${segment.id}`}
+                                checked={selectedJob.selected_segment_ids.includes(segment.id)}
+                                disabled={
+                                  selectedJob.status === "running" ||
+                                  isUpdatingSegmentSelection
+                                }
+                                onChange={() => void handleToggleSegment(selectedJob, segment.id)}
+                              />
+                              <span>
+                                <strong>{segment.id}</strong>
+                                <span className="muted small">{segment.media_file}</span>
+                              </span>
+                              <div className="step-actions">
+                                <span className={`pill step-${segment.status}`}>
+                                  {STEP_STATUS_LABEL[segment.status]}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="chip"
+                                  disabled={isBusy || selectedJob.status === "running"}
+                                  onClick={() => {
+                                    void handleRetrySegment(selectedJob.id, segment.id);
+                                  }}
+                                >
+                                  重试转写
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </article>
+                    )}
+
+                    {selectedJob.error_message && (
+                      <div className="banner error inline">
+                        {selectedJob.error_message}
+                      </div>
+                    )}
+
+                    <article className="card soft log-card">
+                      <div className="log-header">
+                        <h3>日志</h3>
+                        <div className="log-tabs" role="tablist" aria-label="任务日志">
+                          {LOG_NAMES.map((name) => (
+                            <button
+                              key={name}
+                              id={`log-tab-${name}`}
+                              type="button"
+                              role="tab"
+                              aria-selected={logName === name}
+                              aria-controls="job-log-panel"
+                              tabIndex={logName === name ? 0 : -1}
+                              className={
+                                logName === name ? "chip active" : "chip"
+                              }
+                              onClick={() => {
+                                setLogName(name);
+                                void reloadLog(selectedJob.id, name);
+                              }}
+                              onKeyDown={(event) => {
+                                if (
+                                  handleLogTabNavigation(
+                                    selectedJob.id,
+                                    name,
+                                    event.key,
+                                  )
+                                ) {
+                                  event.preventDefault();
+                                }
+                              }}
+                            >
+                              {name}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <pre
+                        id="job-log-panel"
+                        className="log-view"
+                        role="tabpanel"
+                        aria-labelledby={`log-tab-${logName}`}
+                        tabIndex={0}
+                      >
+                        {logText}
+                      </pre>
+                    </article>
+
+                    {(transcriptText || summaryText) && (
+                      <div className="artifact-grid">
+                        {transcriptText && (
+                          <article className="card soft">
+                            <h3>合并字幕</h3>
+                            <pre className="artifact-view">{transcriptText}</pre>
+                          </article>
+                        )}
+                        {summaryText && (
+                          <article className="card soft">
+                            <h3>Markdown 总结</h3>
+                            <pre className="artifact-view markdown-view">{summaryText}</pre>
+                          </article>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </section>
+            </div>
+          </>
         ) : (
           <section className="panel settings">
-            <h1>设置（只读预览）</h1>
-            <p className="muted">
-              配置文件与工作区路径按规格分离；完整编辑 UI 后续迭代。
-            </p>
+            <div className="panel-header">
+              <div>
+                <h1>设置</h1>
+                <p className="muted">
+                  工作区与 API Key 分离；Sidecar 按 内置 → 配置路径 → PATH 解析。
+                </p>
+              </div>
+              <div className="detail-actions">
+                <button
+                  className="btn secondary"
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => void handleCheckYtDlp()}
+                >
+                  检查并更新 yt-dlp
+                </button>
+                <button
+                  className="btn"
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => void handleSaveSettings()}
+                >
+                  保存设置
+                </button>
+              </div>
+            </div>
 
             <div className="cards">
               <article className="card">
-                <h2>工作区</h2>
-                <dl>
-                  <div>
-                    <dt>workspace</dt>
-                    <dd className="mono">{config?.workspace_dir ?? "-"}</dd>
+                <h2>工作区与默认流水线</h2>
+                <div className="form-grid">
+                  <label>
+                    <span>工作区路径</span>
+                    <input
+                      value={settingsWorkspace}
+                      onChange={(event) => setSettingsWorkspace(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>默认直播分段（分钟）</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={settingsSegmentMinutes}
+                      onChange={(event) =>
+                        setSettingsSegmentMinutes(Number(event.target.value) || 30)
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>代理 URL（总结出网，可选）</span>
+                    <input
+                      value={settingsProxy}
+                      onChange={(event) => setSettingsProxy(event.target.value)}
+                      placeholder="http://127.0.0.1:7890"
+                    />
+                  </label>
+                  <label>
+                    <span>默认 Provider</span>
+                    <select
+                      value={settingsDefaultProviderId}
+                      onChange={(event) => setSettingsDefaultProviderId(event.target.value)}
+                    >
+                      {providerDrafts.map((provider) => (
+                        <option key={provider.id} value={provider.id}>{provider.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>默认总结模板</span>
+                    <select
+                      value={settingsDefaultTemplateId}
+                      onChange={(event) => setSettingsDefaultTemplateId(event.target.value)}
+                    >
+                      {templateDrafts.map((template) => (
+                        <option key={template.id} value={template.id}>{template.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="checkbox-row">
+                    <label className="checkbox">
+                      <input
+                        type="checkbox"
+                        checked={settingsAutoTranscribe}
+                        disabled={settingsAutoSummarize}
+                        onChange={(event) =>
+                          setSettingsAutoTranscribe(event.target.checked)
+                        }
+                      />
+                      默认自动转写
+                    </label>
+                    <label className="checkbox">
+                      <input
+                        type="checkbox"
+                        checked={settingsAutoSummarize}
+                        onChange={(event) => {
+                          const checked = event.target.checked;
+                          setSettingsAutoSummarize(checked);
+                          if (checked) {
+                            setSettingsAutoTranscribe(true);
+                          }
+                        }}
+                      />
+                      默认自动总结
+                    </label>
                   </div>
-                  <div>
-                    <dt>config</dt>
-                    <dd className="mono">{config?.config_path ?? "-"}</dd>
+                  <div className="two-col">
+                    <label>
+                      <span>磁盘保护阈值（GB）</span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={settingsMinDisk}
+                        onChange={(event) =>
+                          setSettingsMinDisk(Number(event.target.value) || 5)
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>直播重连次数</span>
+                      <input
+                        type="number"
+                        min={0}
+                        value={settingsReconnect}
+                        onChange={(event) =>
+                          setSettingsReconnect(Number(event.target.value) || 0)
+                        }
+                      />
+                    </label>
                   </div>
-                  <div>
-                    <dt>默认分段</dt>
-                    <dd>{config?.default_segment_minutes ?? "-"} 分钟</dd>
+                  <div className="two-col">
+                    <label>
+                      <span>总结最大输入字符数</span>
+                      <input
+                        type="number"
+                        min={1000}
+                        value={settingsMaxContextChars}
+                        onChange={(event) => setSettingsMaxContextChars(Number(event.target.value) || 400000)}
+                      />
+                    </label>
+                    <label>
+                      <span>转写语言</span>
+                      <input
+                        value={settingsTranscribeLanguage}
+                        onChange={(event) => setSettingsTranscribeLanguage(event.target.value)}
+                        placeholder="auto / zh / en"
+                      />
+                    </label>
                   </div>
-                  <div>
-                    <dt>默认流水线</dt>
-                    <dd>
-                      转写 {config?.default_auto_transcribe ? "开" : "关"} / 总结{" "}
-                      {config?.default_auto_summarize ? "开" : "关"}
-                    </dd>
-                  </div>
-                </dl>
+                  <label>
+                    <span>whisper.cpp 模型文件</span>
+                    <input
+                      value={settingsTranscribeModel}
+                      onChange={(event) => setSettingsTranscribeModel(event.target.value)}
+                      placeholder="D:/models/ggml-base.bin"
+                    />
+                  </label>
+                  <p className="muted small mono">
+                    配置文件：{config?.config_path ?? "—"}
+                  </p>
+                </div>
               </article>
 
               <article className="card">
-                <h2>Sidecar 探测</h2>
+                <h2>Sidecar 路径（可选覆盖）</h2>
+                <div className="form-grid">
+                  <label>
+                    <span>yt-dlp</span>
+                    <input
+                      value={settingsYtDlp}
+                      onChange={(event) => setSettingsYtDlp(event.target.value)}
+                      placeholder="留空则使用 PATH"
+                    />
+                  </label>
+                  <label>
+                    <span>ffmpeg</span>
+                    <input
+                      value={settingsFfmpeg}
+                      onChange={(event) => setSettingsFfmpeg(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>ffprobe</span>
+                    <input
+                      value={settingsFfprobe}
+                      onChange={(event) => setSettingsFfprobe(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>streamlink</span>
+                    <input
+                      value={settingsStreamlink}
+                      onChange={(event) => setSettingsStreamlink(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>whisper.cpp / whisper-cli</span>
+                    <input
+                      value={settingsTranscribe}
+                      onChange={(event) => setSettingsTranscribe(event.target.value)}
+                      placeholder="D:/tools/whisper-cli.exe"
+                    />
+                  </label>
+                </div>
+              </article>
+
+              <article className="card">
+                <h2>Sidecar 探测结果</h2>
                 <div className="sidecar-list">
                   {sidecars &&
                     Object.values(sidecars).map((binary) => (
@@ -359,32 +1771,75 @@ function App() {
                 </div>
               </article>
 
-              <article className="card">
-                <h2>Provider 档案</h2>
-                <ul className="plain-list">
-                  {config?.providers.map((provider) => (
-                    <li key={provider.id}>
-                      <strong>{provider.name}</strong>
-                      <div className="muted small">
-                        {provider.protocol} · {provider.default_model} · Key{" "}
-                        {provider.has_api_key ? "已配置" : "未配置"}
+              <article className="card settings-wide">
+                <div className="log-header">
+                  <h2>Provider 档案</h2>
+                  <button
+                    type="button"
+                    className="btn secondary small"
+                    onClick={() => setProviderDrafts((items) => [...items, {
+                      id: `provider-${items.length + 1}`,
+                      name: "新 Provider",
+                      protocol: "openai",
+                      base_url: "https://api.openai.com/v1",
+                      api_key: null,
+                      api_key_env: "OPENAI_API_KEY",
+                      default_model: "gpt-4o-mini",
+                      extra_headers: [],
+                    }])}
+                  >
+                    添加档案
+                  </button>
+                </div>
+                <div className="profile-list">
+                  {providerDrafts.map((provider, index) => (
+                    <div className="profile-editor" key={`${provider.id}-${index}`}>
+                      <div className="two-col">
+                        <label><span>ID</span><input value={provider.id} onChange={(event) => handleProviderIdChange(index, provider.id, event.target.value)} /></label>
+                        <label><span>名称</span><input value={provider.name} onChange={(event) => setProviderDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, name: event.target.value} : item))} /></label>
                       </div>
-                      <div className="mono small">{provider.base_url}</div>
-                    </li>
+                      <div className="two-col">
+                        <label><span>协议</span><select value={provider.protocol} onChange={(event) => setProviderDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, protocol: event.target.value as "openai" | "anthropic"} : item))}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
+                        <label><span>默认模型</span><input value={provider.default_model} onChange={(event) => setProviderDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, default_model: event.target.value} : item))} /></label>
+                      </div>
+                      <label><span>Base URL</span><input value={provider.base_url} onChange={(event) => setProviderDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, base_url: event.target.value} : item))} /></label>
+                      <div className="two-col">
+                        <label><span>API Key 环境变量</span><input value={provider.api_key_env ?? ""} onChange={(event) => setProviderDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, api_key_env: event.target.value || null} : item))} /></label>
+                        <label><span>API Key（留空保留原值）</span><input type="password" value={provider.api_key ?? ""} onChange={(event) => setProviderDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, api_key: event.target.value || null} : item))} /></label>
+                      </div>
+                      <div className="detail-actions">
+                        <button
+                          type="button"
+                          className="btn secondary small"
+                          disabled={isBusy || providerDraftsAreDirty}
+                          title={providerDraftsAreDirty ? "请先保存 Provider 修改" : undefined}
+                          onClick={() => void handleTestProvider(provider.id)}
+                        >
+                          测试连通
+                        </button>
+                        {providerDrafts.length > 1 && <button type="button" className="btn danger small" onClick={() => handleDeleteProvider(index)}>删除</button>}
+                      </div>
+                    </div>
                   ))}
-                </ul>
+                </div>
               </article>
 
-              <article className="card">
-                <h2>总结模板</h2>
-                <ul className="plain-list">
-                  {config?.templates.map((template) => (
-                    <li key={template.id}>
-                      <strong>{template.name}</strong>
-                      <div className="muted small">{template.id}</div>
-                    </li>
+              <article className="card settings-wide">
+                <div className="log-header"><h2>总结模板</h2><button type="button" className="btn secondary small" onClick={() => setTemplateDrafts((items) => [...items, {id: `template-${items.length + 1}`, name: "新模板", system_prompt: "你是一个严谨的中文内容助理。", user_template: "请总结以下内容：\n\n{{transcript}}"}])}>添加模板</button></div>
+                <div className="profile-list">
+                  {templateDrafts.map((template, index) => (
+                    <div className="profile-editor" key={`${template.id}-${index}`}>
+                      <div className="two-col">
+                        <label><span>ID</span><input value={template.id} onChange={(event) => handleTemplateIdChange(index, template.id, event.target.value)} /></label>
+                        <label><span>名称</span><input value={template.name} onChange={(event) => setTemplateDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, name: event.target.value} : item))} /></label>
+                      </div>
+                      <label><span>System Prompt</span><textarea value={template.system_prompt} onChange={(event) => setTemplateDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, system_prompt: event.target.value} : item))} /></label>
+                      <label><span>用户模板</span><textarea rows={6} value={template.user_template} onChange={(event) => setTemplateDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, user_template: event.target.value} : item))} /></label>
+                      <div className="muted small">变量：{`{{title}} {{source_url}} {{duration}} {{transcript}}`}</div>
+                      {templateDrafts.length > 1 && <button type="button" className="btn danger small" onClick={() => handleDeleteTemplate(index)}>删除模板</button>}
+                    </div>
                   ))}
-                </ul>
+                </div>
               </article>
             </div>
           </section>
@@ -393,17 +1848,25 @@ function App() {
 
       {createMode && (
         <div className="modal-backdrop" role="presentation">
-          <div className="modal" role="dialog" aria-modal="true">
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-dialog-title"
+          >
             <div className="modal-header">
-              <h2>
-                {createMode === "download" && "新建下载任务"}
-                {createMode === "live" && "新建直播录制"}
-                {createMode === "import" && "导入本地视频"}
-              </h2>
+              <div>
+                <div className="detail-kicker">新建任务</div>
+                <h2 id="create-dialog-title">
+                  {createMode === "download" && "下载链接"}
+                  {createMode === "live" && "录制直播"}
+                  {createMode === "import" && "导入本地视频"}
+                </h2>
+              </div>
               <button
                 className="btn secondary small"
                 type="button"
-                onClick={() => setCreateMode(null)}
+                onClick={closeCreate}
               >
                 关闭
               </button>
@@ -414,9 +1877,10 @@ function App() {
                 <label>
                   <span>URL / 流地址</span>
                   <input
+                    ref={modalInitialFocusRef}
                     value={formUrl}
                     onChange={(event) => setFormUrl(event.target.value)}
-                    placeholder="https://... 或 m3u8/flv 地址"
+                    placeholder="https://... 或 m3u8/flv（最佳努力）"
                   />
                 </label>
               )}
@@ -425,6 +1889,7 @@ function App() {
                 <label>
                   <span>本地文件路径</span>
                   <input
+                    ref={modalInitialFocusRef}
                     value={formLocalPath}
                     onChange={(event) => setFormLocalPath(event.target.value)}
                     placeholder="D:/videos/example.mp4"
@@ -460,6 +1925,7 @@ function App() {
                   <input
                     type="checkbox"
                     checked={autoTranscribe}
+                    disabled={autoSummarize}
                     onChange={(event) => setAutoTranscribe(event.target.checked)}
                   />
                   完成后自动转写
@@ -468,22 +1934,64 @@ function App() {
                   <input
                     type="checkbox"
                     checked={autoSummarize}
-                    onChange={(event) => setAutoSummarize(event.target.checked)}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setAutoSummarize(checked);
+                      if (checked) {
+                        setAutoTranscribe(true);
+                      }
+                    }}
                   />
                   转写后自动总结
                 </label>
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={autoStart}
+                    onChange={(event) => setAutoStart(event.target.checked)}
+                  />
+                  创建后立即运行
+                </label>
               </div>
+
+              {autoSummarize && (
+                <div className="two-col">
+                  <label>
+                    <span>Provider</span>
+                    <select value={formProviderId} onChange={(event) => setFormProviderId(event.target.value)}>
+                      {config?.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    <span>总结模板</span>
+                    <select value={formTemplateId} onChange={(event) => setFormTemplateId(event.target.value)}>
+                      {config?.templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                    </select>
+                  </label>
+                </div>
+              )}
+
+              {createMode === "live" && (
+                <p className="muted small">
+                  录制中关闭窗口会隐藏到托盘；点击托盘可恢复。停止后会保留分段并尝试合并。
+                </p>
+              )}
             </div>
 
             <div className="modal-actions">
               <button
                 className="btn secondary"
                 type="button"
-                onClick={() => setCreateMode(null)}
+                onClick={closeCreate}
               >
                 取消
               </button>
-              <button className="btn" type="button" onClick={() => void submitCreate()}>
+              <button
+                className="btn"
+                type="button"
+                disabled={isBusy}
+                onClick={() => void submitCreate()}
+              >
                 创建任务
               </button>
             </div>
