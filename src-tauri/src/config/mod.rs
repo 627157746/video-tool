@@ -1,5 +1,8 @@
 use crate::error::{AppError, AppResult};
+use crate::models::SaveConfigRequest;
+use crate::storage;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -48,6 +51,12 @@ pub struct AppConfig {
     pub proxy_url: Option<String>,
     pub min_free_disk_gb: u32,
     pub live_reconnect_attempts: u32,
+    #[serde(default = "default_max_context_chars")]
+    pub max_context_chars: usize,
+    #[serde(default)]
+    pub transcribe_model: Option<String>,
+    #[serde(default = "default_transcribe_language")]
+    pub transcribe_language: String,
     pub sidecar_paths: SidecarPaths,
     pub providers: Vec<ProviderProfile>,
     pub templates: Vec<SummaryTemplate>,
@@ -55,9 +64,7 @@ pub struct AppConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        let workspace_dir = default_workspace_dir()
-            .to_string_lossy()
-            .replace('\\', "/");
+        let workspace_dir = default_workspace_dir().to_string_lossy().replace('\\', "/");
 
         Self {
             workspace_dir,
@@ -69,6 +76,9 @@ impl Default for AppConfig {
             proxy_url: None,
             min_free_disk_gb: 5,
             live_reconnect_attempts: 3,
+            max_context_chars: default_max_context_chars(),
+            transcribe_model: None,
+            transcribe_language: default_transcribe_language(),
             sidecar_paths: SidecarPaths {
                 ffmpeg: None,
                 ffprobe: None,
@@ -168,21 +178,209 @@ impl AppConfig {
         if path.exists() {
             let raw = fs::read_to_string(&path)?;
             let config: AppConfig = serde_json::from_str(&raw)?;
+            config.validate()?;
             return Ok(config);
         }
 
         let config = AppConfig::default();
+        config.validate()?;
         config.save()?;
         Ok(config)
     }
 
     pub fn save(&self) -> AppResult<()> {
         let path = app_config_path()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+        storage::write_json_atomically(&path, self)?;
+        Ok(())
+    }
+
+    pub fn candidate_with_update(&self, request: SaveConfigRequest) -> AppResult<Self> {
+        let mut candidate = self.clone();
+
+        if let Some(workspace_dir) = request.workspace_dir {
+            let trimmed = workspace_dir.trim();
+            if trimmed.is_empty() {
+                return Err(AppError::message("工作区路径不能为空"));
+            }
+            candidate.workspace_dir = trimmed.replace('\\', "/");
         }
-        let raw = serde_json::to_string_pretty(self)?;
-        fs::write(path, raw)?;
+        if let Some(value) = request.default_segment_minutes {
+            candidate.default_segment_minutes = value;
+        }
+        if let Some(value) = request.default_auto_transcribe {
+            candidate.default_auto_transcribe = value;
+        }
+        if let Some(value) = request.default_auto_summarize {
+            candidate.default_auto_summarize = value;
+        }
+        if candidate.default_auto_summarize {
+            candidate.default_auto_transcribe = true;
+        }
+        if let Some(value) = request.default_provider_profile_id {
+            candidate.default_provider_profile_id = empty_to_none(value);
+        }
+        if let Some(value) = request.default_template_id {
+            candidate.default_template_id = empty_to_none(value);
+        }
+        if let Some(value) = request.proxy_url {
+            candidate.proxy_url = empty_to_none(value);
+        }
+        if let Some(value) = request.min_free_disk_gb {
+            candidate.min_free_disk_gb = value;
+        }
+        if let Some(value) = request.live_reconnect_attempts {
+            candidate.live_reconnect_attempts = value;
+        }
+        if let Some(value) = request.max_context_chars {
+            candidate.max_context_chars = value;
+        }
+        if let Some(value) = request.transcribe_model {
+            candidate.transcribe_model = empty_to_none(value);
+        }
+        if let Some(value) = request.transcribe_language {
+            candidate.transcribe_language = if value.trim().is_empty() {
+                "auto".to_string()
+            } else {
+                value.trim().to_string()
+            };
+        }
+        if let Some(paths) = request.sidecar_paths {
+            candidate.sidecar_paths = paths;
+        }
+        if let Some(mut providers) = request.providers {
+            for provider in &mut providers {
+                let existing_provider = self
+                    .providers
+                    .iter()
+                    .find(|existing| existing.id == provider.id);
+                if provider
+                    .api_key
+                    .as_ref()
+                    .is_none_or(|api_key| api_key.trim().is_empty())
+                {
+                    provider.api_key =
+                        existing_provider.and_then(|existing| existing.api_key.clone());
+                }
+                if let Some(existing_provider) = existing_provider {
+                    for (header_name, header_value) in &mut provider.extra_headers {
+                        let should_preserve = is_sensitive_header_name(header_name)
+                            && (header_value.trim().is_empty() || header_value == "***REDACTED***");
+                        if should_preserve {
+                            if let Some((_, existing_value)) = existing_provider
+                                .extra_headers
+                                .iter()
+                                .find(|(existing_name, _)| {
+                                    existing_name.eq_ignore_ascii_case(header_name)
+                                })
+                            {
+                                *header_value = existing_value.clone();
+                            }
+                        }
+                    }
+                }
+            }
+            candidate.providers = providers;
+        }
+        if let Some(templates) = request.templates {
+            candidate.templates = templates;
+        }
+
+        candidate.validate()?;
+        Ok(candidate)
+    }
+
+    pub fn validate(&self) -> AppResult<()> {
+        if self.workspace_dir.trim().is_empty() {
+            return Err(AppError::message("工作区路径不能为空"));
+        }
+        if !(1..=1_440).contains(&self.default_segment_minutes) {
+            return Err(AppError::message("默认直播分段必须在 1 到 1440 分钟之间"));
+        }
+        if self.live_reconnect_attempts > 100 {
+            return Err(AppError::message("直播重连次数不能超过 100"));
+        }
+        if self.min_free_disk_gb > 1_000_000 {
+            return Err(AppError::message("磁盘保护阈值不能超过 1000000 GB"));
+        }
+        if !(1_000..=10_000_000).contains(&self.max_context_chars) {
+            return Err(AppError::message(
+                "总结最大输入字符数必须在 1000 到 10000000 之间",
+            ));
+        }
+        if let Some(proxy_url) = self.proxy_url.as_deref() {
+            validate_url(
+                proxy_url,
+                &["http", "https", "socks4", "socks5", "socks5h"],
+                "代理 URL",
+            )?;
+        }
+        if self.providers.is_empty() {
+            return Err(AppError::message("至少保留一个 Provider 档案"));
+        }
+        let mut provider_ids = HashSet::new();
+        for provider in &self.providers {
+            if provider.id.trim().is_empty()
+                || provider.name.trim().is_empty()
+                || provider.base_url.trim().is_empty()
+                || provider.default_model.trim().is_empty()
+            {
+                return Err(AppError::message(
+                    "Provider ID、名称、Base URL 和默认模型不能为空",
+                ));
+            }
+            if !provider_ids.insert(provider.id.as_str()) {
+                return Err(AppError::message(format!(
+                    "Provider ID 重复: {}",
+                    provider.id
+                )));
+            }
+            if provider.protocol != "openai" && provider.protocol != "anthropic" {
+                return Err(AppError::message(format!(
+                    "Provider {} 的协议必须是 openai 或 anthropic",
+                    provider.id
+                )));
+            }
+            validate_url(&provider.base_url, &["http", "https"], "Provider Base URL")?;
+            for (header_name, header_value) in &provider.extra_headers {
+                reqwest::header::HeaderName::from_bytes(header_name.as_bytes())
+                    .map_err(|error| AppError::message(format!("额外 Header 名无效: {error}")))?;
+                reqwest::header::HeaderValue::from_str(header_value)
+                    .map_err(|error| AppError::message(format!("额外 Header 值无效: {error}")))?;
+            }
+        }
+        if let Some(default_provider_id) = self.default_provider_profile_id.as_deref() {
+            if !provider_ids.contains(default_provider_id) {
+                return Err(AppError::message(format!(
+                    "默认 Provider 不存在: {default_provider_id}"
+                )));
+            }
+        }
+
+        if self.templates.is_empty() {
+            return Err(AppError::message("至少保留一个总结模板"));
+        }
+        let mut template_ids = HashSet::new();
+        for template in &self.templates {
+            if template.id.trim().is_empty()
+                || template.name.trim().is_empty()
+                || template.user_template.trim().is_empty()
+            {
+                return Err(AppError::message("总结模板 ID、名称和用户模板不能为空"));
+            }
+            if !template_ids.insert(template.id.as_str()) {
+                return Err(AppError::message(format!(
+                    "总结模板 ID 重复: {}",
+                    template.id
+                )));
+            }
+        }
+        if let Some(default_template_id) = self.default_template_id.as_deref() {
+            if !template_ids.contains(default_template_id) {
+                return Err(AppError::message(format!(
+                    "默认总结模板不存在: {default_template_id}"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -211,6 +409,25 @@ impl AppConfig {
             .cloned()
     }
 
+    pub fn secret_values(&self) -> Vec<String> {
+        let mut secrets = Vec::new();
+        for provider in &self.providers {
+            if let Some(api_key) = self.resolve_api_key(provider) {
+                secrets.push(api_key);
+            }
+            secrets.extend(
+                provider
+                    .extra_headers
+                    .iter()
+                    .filter(|(name, value)| {
+                        is_sensitive_header_name(name) && !value.trim().is_empty()
+                    })
+                    .map(|(_, value)| value.clone()),
+            );
+        }
+        secrets
+    }
+
     pub fn public_view(&self) -> AppConfigPublic {
         AppConfigPublic {
             workspace_dir: self.workspace_dir.clone(),
@@ -222,6 +439,9 @@ impl AppConfig {
             proxy_url: self.proxy_url.clone(),
             min_free_disk_gb: self.min_free_disk_gb,
             live_reconnect_attempts: self.live_reconnect_attempts,
+            max_context_chars: self.max_context_chars,
+            transcribe_model: self.transcribe_model.clone(),
+            transcribe_language: self.transcribe_language.clone(),
             sidecar_paths: self.sidecar_paths.clone(),
             providers: self
                 .providers
@@ -234,6 +454,20 @@ impl AppConfig {
                     api_key_env: provider.api_key_env.clone(),
                     has_api_key: self.resolve_api_key(provider).is_some(),
                     default_model: provider.default_model.clone(),
+                    extra_headers: provider
+                        .extra_headers
+                        .iter()
+                        .map(|(name, value)| {
+                            (
+                                name.clone(),
+                                if is_sensitive_header_name(name) {
+                                    "***REDACTED***".to_string()
+                                } else {
+                                    value.clone()
+                                },
+                            )
+                        })
+                        .collect(),
                 })
                 .collect(),
             templates: self.templates.clone(),
@@ -253,6 +487,7 @@ pub struct ProviderProfilePublic {
     pub api_key_env: Option<String>,
     pub has_api_key: bool,
     pub default_model: String,
+    pub extra_headers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,12 +501,124 @@ pub struct AppConfigPublic {
     pub proxy_url: Option<String>,
     pub min_free_disk_gb: u32,
     pub live_reconnect_attempts: u32,
+    pub max_context_chars: usize,
+    pub transcribe_model: Option<String>,
+    pub transcribe_language: String,
     pub sidecar_paths: SidecarPaths,
     pub providers: Vec<ProviderProfilePublic>,
     pub templates: Vec<SummaryTemplate>,
     pub config_path: String,
 }
 
+fn default_max_context_chars() -> usize {
+    400_000
+}
+
+fn default_transcribe_language() -> String {
+    "auto".to_string()
+}
+
+fn empty_to_none(value: String) -> Option<String> {
+    let trimmed = value.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn is_sensitive_header_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    normalized == "authorization"
+        || normalized == "proxy-authorization"
+        || normalized.contains("api-key")
+        || normalized.contains("token")
+        || normalized.contains("secret")
+}
+
+fn validate_url(value: &str, allowed_schemes: &[&str], label: &str) -> AppResult<()> {
+    let parsed = reqwest::Url::parse(value)
+        .map_err(|error| AppError::message(format!("{label} 无效: {error}")))?;
+    if !allowed_schemes.contains(&parsed.scheme()) {
+        return Err(AppError::message(format!(
+            "{label} 协议不支持: {}",
+            parsed.scheme()
+        )));
+    }
+    Ok(())
+}
+
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_duplicate_provider_ids_without_changing_original() {
+        let original = AppConfig::default();
+        let mut duplicate_providers = original.providers.clone();
+        duplicate_providers[1].id = duplicate_providers[0].id.clone();
+        let request = SaveConfigRequest {
+            providers: Some(duplicate_providers),
+            ..empty_save_request()
+        };
+
+        let error = original
+            .candidate_with_update(request)
+            .expect_err("duplicate IDs must fail");
+        assert!(error.to_string().contains("Provider ID 重复"));
+        assert_ne!(original.providers[0].id, original.providers[1].id);
+    }
+
+    #[test]
+    fn preserves_existing_keys_and_masks_sensitive_public_headers() {
+        let mut original = AppConfig::default();
+        original.providers[0].api_key = Some("secret-api-key".into());
+        original.providers[0]
+            .extra_headers
+            .push(("Authorization".into(), "Bearer secret".into()));
+        let mut incoming_providers = original.providers.clone();
+        incoming_providers[0].api_key = Some(String::new());
+        incoming_providers[0].extra_headers[0].1 = "***REDACTED***".into();
+
+        let candidate = original
+            .candidate_with_update(SaveConfigRequest {
+                providers: Some(incoming_providers),
+                ..empty_save_request()
+            })
+            .expect("build candidate");
+
+        assert_eq!(
+            candidate.providers[0].api_key.as_deref(),
+            Some("secret-api-key")
+        );
+        assert_eq!(candidate.providers[0].extra_headers[0].1, "Bearer secret");
+        assert_eq!(
+            candidate.public_view().providers[0].extra_headers[0].1,
+            "***REDACTED***"
+        );
+    }
+
+    fn empty_save_request() -> SaveConfigRequest {
+        SaveConfigRequest {
+            workspace_dir: None,
+            default_segment_minutes: None,
+            default_auto_transcribe: None,
+            default_auto_summarize: None,
+            default_provider_profile_id: None,
+            default_template_id: None,
+            proxy_url: None,
+            min_free_disk_gb: None,
+            live_reconnect_attempts: None,
+            max_context_chars: None,
+            transcribe_model: None,
+            transcribe_language: None,
+            sidecar_paths: None,
+            providers: None,
+            templates: None,
+        }
+    }
 }

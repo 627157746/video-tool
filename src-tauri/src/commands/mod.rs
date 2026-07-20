@@ -1,17 +1,22 @@
 use crate::config::{AppConfig, AppConfigPublic};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::models::{
-    CreateDownloadJobRequest, CreateImportJobRequest, CreateLiveRecordJobRequest, Job, JobKind,
-    JobListItem, JobSource, PipelineOptions,
+    CreateDownloadJobRequest, CreateImportJobRequest, CreateLiveRecordJobRequest, ExportJobRequest,
+    Job, JobKind, JobListItem, JobLogRequest, JobSource, PipelineOptions,
+    RetryTranscriptSegmentRequest, RunJobRequest, SaveConfigRequest, SelectSegmentsRequest,
+    TestProviderRequest,
 };
-use crate::sidecar::{self, SidecarStatus};
+use crate::pipeline::{self, RunnerState};
+use crate::sidecar::SidecarStatus;
 use crate::workspace;
-use chrono::Utc;
-use std::sync::Mutex;
-use tauri::State;
+use serde::Serialize;
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, State};
 
 pub struct AppState {
     pub config: Mutex<AppConfig>,
+    pub operation_lock: Mutex<()>,
+    pub runner: Arc<RunnerState>,
 }
 
 #[tauri::command]
@@ -23,7 +28,7 @@ pub fn get_app_info() -> AppInfo {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AppInfo {
     pub name: String,
     pub version: String,
@@ -38,11 +43,48 @@ pub fn get_config(state: State<'_, AppState>) -> AppResult<AppConfigPublic> {
 
 #[tauri::command]
 pub fn reload_config(state: State<'_, AppState>) -> AppResult<AppConfigPublic> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
     let loaded = AppConfig::load_or_init()?;
+    loaded.validate()?;
+    let current_workspace = state
+        .config
+        .lock()
+        .expect("config lock")
+        .workspace_dir
+        .clone();
+    if state.runner.has_running_jobs() && loaded.workspace_dir != current_workspace {
+        return Err(AppError::message("任务运行期间不能切换工作区"));
+    }
     loaded.ensure_workspace()?;
+    if loaded.workspace_dir != current_workspace {
+        workspace::recover_interrupted_jobs(loaded.workspace_path())?;
+    }
     let public_view = loaded.public_view();
     let mut config = state.config.lock().expect("config lock");
     *config = loaded;
+    Ok(public_view)
+}
+
+#[tauri::command]
+pub fn save_config(
+    state: State<'_, AppState>,
+    request: SaveConfigRequest,
+) -> AppResult<AppConfigPublic> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    let current_config = state.config.lock().expect("config lock").clone();
+    let candidate = current_config.candidate_with_update(request)?;
+    let workspace_changed = candidate.workspace_dir != current_config.workspace_dir;
+    if workspace_changed && state.runner.has_running_jobs() {
+        return Err(AppError::message("任务运行期间不能切换工作区"));
+    }
+
+    candidate.ensure_workspace()?;
+    if workspace_changed {
+        workspace::recover_interrupted_jobs(candidate.workspace_path())?;
+    }
+    candidate.save()?;
+    let public_view = candidate.public_view();
+    *state.config.lock().expect("config lock") = candidate;
     Ok(public_view)
 }
 
@@ -61,103 +103,341 @@ pub fn get_job(state: State<'_, AppState>, job_id: String) -> AppResult<Job> {
 }
 
 #[tauri::command]
+pub fn delete_job(state: State<'_, AppState>, job_id: String) -> AppResult<()> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    if state.runner.is_job_running(&job_id) {
+        return Err(AppError::message(
+            "任务运行期间不能删除，请等待当前步骤结束",
+        ));
+    }
+
+    let workspace_path = state.config.lock().expect("config lock").workspace_path();
+    workspace::delete_job(workspace_path, &job_id)
+}
+
+#[tauri::command]
 pub fn create_download_job(
+    app: AppHandle,
     state: State<'_, AppState>,
     request: CreateDownloadJobRequest,
 ) -> AppResult<Job> {
-    let config = state.config.lock().expect("config lock");
-    config.ensure_workspace()?;
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    let (job, should_start, config_snapshot, runner) = {
+        let config = state.config.lock().expect("config lock");
+        config.ensure_workspace()?;
 
-    let url = request.url.trim().to_string();
-    if url.is_empty() {
-        return Err(crate::error::AppError::message("下载链接不能为空"));
+        let url = request.url.trim().to_string();
+        if url.is_empty() {
+            return Err(AppError::message("下载链接不能为空"));
+        }
+
+        let pipeline = merge_pipeline(&config, request.pipeline);
+        let job = Job::new(
+            JobSource {
+                kind: JobKind::Download,
+                url: Some(url),
+                title: request.title,
+                local_path: None,
+                segment_minutes: None,
+            },
+            pipeline,
+        );
+
+        workspace::create_job_directories(config.workspace_path(), &job)?;
+        (
+            job,
+            request.auto_start,
+            config.clone(),
+            Arc::clone(&state.runner),
+        )
+    };
+
+    if should_start {
+        pipeline::spawn_job_run(app, config_snapshot, runner, job.id.clone(), None)?;
     }
 
-    let pipeline = merge_pipeline(&config, request.pipeline);
-    let job = Job::new(
-        JobSource {
-            kind: JobKind::Download,
-            url: Some(url),
-            title: request.title,
-            local_path: None,
-            segment_minutes: None,
-        },
-        pipeline,
-    );
-
-    workspace::create_job_directories(config.workspace_path(), &job)?;
     Ok(job)
 }
 
 #[tauri::command]
 pub fn create_live_record_job(
+    app: AppHandle,
     state: State<'_, AppState>,
     request: CreateLiveRecordJobRequest,
 ) -> AppResult<Job> {
-    let config = state.config.lock().expect("config lock");
-    config.ensure_workspace()?;
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    let (job, should_start, config_snapshot, runner) = {
+        let config = state.config.lock().expect("config lock");
+        config.ensure_workspace()?;
 
-    let url = request.url.trim().to_string();
-    if url.is_empty() {
-        return Err(crate::error::AppError::message("直播地址不能为空"));
+        let url = request.url.trim().to_string();
+        if url.is_empty() {
+            return Err(AppError::message("直播地址不能为空"));
+        }
+
+        let pipeline = merge_pipeline(&config, request.pipeline);
+        let segment_minutes = request
+            .segment_minutes
+            .unwrap_or(config.default_segment_minutes)
+            .max(1);
+
+        let job = Job::new(
+            JobSource {
+                kind: JobKind::LiveRecord,
+                url: Some(url),
+                title: request.title,
+                local_path: None,
+                segment_minutes: Some(segment_minutes),
+            },
+            pipeline,
+        );
+
+        workspace::create_job_directories(config.workspace_path(), &job)?;
+        (
+            job,
+            request.auto_start,
+            config.clone(),
+            Arc::clone(&state.runner),
+        )
+    };
+
+    if should_start {
+        pipeline::spawn_job_run(app, config_snapshot, runner, job.id.clone(), None)?;
     }
 
-    let pipeline = merge_pipeline(&config, request.pipeline);
-    let segment_minutes = request
-        .segment_minutes
-        .unwrap_or(config.default_segment_minutes)
-        .max(1);
-
-    let job = Job::new(
-        JobSource {
-            kind: JobKind::LiveRecord,
-            url: Some(url),
-            title: request.title,
-            local_path: None,
-            segment_minutes: Some(segment_minutes),
-        },
-        pipeline,
-    );
-
-    workspace::create_job_directories(config.workspace_path(), &job)?;
     Ok(job)
 }
 
 #[tauri::command]
 pub fn create_import_job(
+    app: AppHandle,
     state: State<'_, AppState>,
     request: CreateImportJobRequest,
 ) -> AppResult<Job> {
-    let config = state.config.lock().expect("config lock");
-    config.ensure_workspace()?;
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    let (job, should_start, config_snapshot, runner) = {
+        let config = state.config.lock().expect("config lock");
+        config.ensure_workspace()?;
 
-    let local_path = request.local_path.trim().to_string();
-    if local_path.is_empty() {
-        return Err(crate::error::AppError::message("本地路径不能为空"));
+        let local_path = request.local_path.trim().to_string();
+        if local_path.is_empty() {
+            return Err(AppError::message("本地路径不能为空"));
+        }
+
+        let pipeline = merge_pipeline(&config, request.pipeline);
+        let job = Job::new(
+            JobSource {
+                kind: JobKind::ImportLocal,
+                url: None,
+                title: request.title,
+                local_path: Some(local_path),
+                segment_minutes: None,
+            },
+            pipeline,
+        );
+
+        workspace::create_job_directories(config.workspace_path(), &job)?;
+        (
+            job,
+            request.auto_start,
+            config.clone(),
+            Arc::clone(&state.runner),
+        )
+    };
+
+    if should_start {
+        pipeline::spawn_job_run(app, config_snapshot, runner, job.id.clone(), None)?;
     }
 
-    let pipeline = merge_pipeline(&config, request.pipeline);
-    let job = Job::new(
-        JobSource {
-            kind: JobKind::ImportLocal,
-            url: None,
-            title: request.title,
-            local_path: Some(local_path),
-            segment_minutes: None,
-        },
-        pipeline,
-    );
-
-    workspace::create_job_directories(config.workspace_path(), &job)?;
     Ok(job)
+}
+
+#[tauri::command]
+pub fn run_job(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: RunJobRequest,
+) -> AppResult<()> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    let config = state.config.lock().expect("config lock").clone();
+    config.ensure_workspace()?;
+    let _ = workspace::load_job(config.workspace_path(), &request.job_id)?;
+    pipeline::spawn_job_run(
+        app,
+        config,
+        Arc::clone(&state.runner),
+        request.job_id,
+        request.step,
+    )
+}
+
+#[tauri::command]
+pub fn retry_job_step(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: RunJobRequest,
+) -> AppResult<()> {
+    run_job(app, state, request)
+}
+
+#[tauri::command]
+pub fn retry_transcript_segment(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: RetryTranscriptSegmentRequest,
+) -> AppResult<()> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    let config = state.config.lock().expect("config lock").clone();
+    pipeline::spawn_transcript_segment_retry(
+        app,
+        config,
+        Arc::clone(&state.runner),
+        request.job_id,
+        request.segment_id,
+    )
+}
+
+#[tauri::command]
+pub fn stop_recording(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+) -> AppResult<Job> {
+    let config = state.config.lock().expect("config lock");
+    let mut job = workspace::load_job(config.workspace_path(), &job_id)?;
+    if job.source.kind != JobKind::LiveRecord {
+        return Err(AppError::message("只有直播录制任务支持停止"));
+    }
+    if !state.runner.request_stop(&job_id) {
+        return Err(AppError::message("该任务当前没有可停止的运行进程"));
+    }
+    // The runner owns the persisted Job snapshot. Avoid writing this stale
+    // command-side copy over final media and step state while ffmpeg exits.
+    job.stop_requested = true;
+    use tauri::Emitter;
+    let _ = app.emit("job-updated", &job);
+    Ok(job)
+}
+
+#[tauri::command]
+pub fn select_job_segments(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: SelectSegmentsRequest,
+) -> AppResult<Job> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    if request.segment_ids.is_empty() {
+        return Err(AppError::message("总结范围至少选择一个转写分段"));
+    }
+    let config = state.config.lock().expect("config lock");
+    if state.runner.is_job_running(&request.job_id) {
+        return Err(AppError::message("任务运行期间不能修改总结选段"));
+    }
+    let mut job = workspace::load_job(config.workspace_path(), &request.job_id)?;
+    let known_ids: std::collections::HashSet<&str> = job
+        .transcript_segments
+        .iter()
+        .map(|segment| segment.id.as_str())
+        .collect();
+    let unknown: Vec<&str> = request
+        .segment_ids
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !known_ids.contains(id))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(AppError::message(format!(
+            "包含未知转写分段: {}",
+            unknown.join(", ")
+        )));
+    }
+    job.selected_segment_ids = request.segment_ids;
+    for segment in &mut job.media_segments {
+        segment.selected_for_summary = job.selected_segment_ids.contains(&segment.id);
+    }
+    job.invalidate_after_step(&crate::models::JobStep::Transcribe);
+    let job_dir = workspace::validated_job_dir(config.workspace_path(), &job.id)?;
+    job.refresh_derived_status();
+    job.updated_at = chrono::Utc::now();
+    workspace::save_job(config.workspace_path(), &job)?;
+    use tauri::Emitter;
+    let _ = app.emit("job-updated", &job);
+    pipeline::paths::remove_downstream_artifacts(&job_dir, &crate::models::JobStep::Transcribe)?;
+    Ok(job)
+}
+
+#[tauri::command]
+pub fn export_job(state: State<'_, AppState>, request: ExportJobRequest) -> AppResult<String> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    if state.runner.is_job_running(&request.job_id) {
+        return Err(AppError::message(
+            "任务运行期间不能导出，请等待当前步骤结束",
+        ));
+    }
+    let (workspace_path, secrets) = {
+        let config = state.config.lock().expect("config lock");
+        (config.workspace_path(), config.secret_values())
+    };
+    pipeline::export::export_job_package(
+        &workspace_path,
+        &request.job_id,
+        request.destination_dir.as_deref(),
+        &secrets,
+    )
+}
+
+#[tauri::command]
+pub fn test_provider(
+    state: State<'_, AppState>,
+    request: TestProviderRequest,
+) -> AppResult<String> {
+    let config = state.config.lock().expect("config lock").clone();
+    pipeline::summarize::test_provider(&config, &request.provider_profile_id)
+}
+
+#[tauri::command]
+pub fn get_job_transcript(state: State<'_, AppState>, job_id: String) -> AppResult<String> {
+    let config = state.config.lock().expect("config lock");
+    let job_dir = workspace::validated_job_dir(config.workspace_path(), &job_id)?;
+    let path = job_dir.join("transcript").join("plain.txt");
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    Ok(std::fs::read_to_string(path)?)
+}
+
+#[tauri::command]
+pub fn get_job_summary(state: State<'_, AppState>, job_id: String) -> AppResult<String> {
+    let config = state.config.lock().expect("config lock");
+    let job_dir = workspace::validated_job_dir(config.workspace_path(), &job_id)?;
+    let path = job_dir.join("summary").join("summary.md");
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    Ok(std::fs::read_to_string(path)?)
+}
+
+#[tauri::command]
+pub fn get_job_log(state: State<'_, AppState>, request: JobLogRequest) -> AppResult<String> {
+    let config = state.config.lock().expect("config lock");
+    let job_dir = workspace::validated_job_dir(config.workspace_path(), &request.job_id)?;
+    if !job_dir.exists() {
+        return Err(AppError::message(format!(
+            "任务目录不存在: {}",
+            job_dir.display()
+        )));
+    }
+
+    let log_name = sanitize_log_name(&request.log_name)?;
+    pipeline::logs::read_log(&job_dir, &log_name, 120_000)
 }
 
 #[tauri::command]
 pub fn open_job_directory(state: State<'_, AppState>, job_id: String) -> AppResult<String> {
     let config = state.config.lock().expect("config lock");
-    let job_dir = config.workspace_path().join("jobs").join(&job_id);
+    let job_dir = workspace::validated_job_dir(config.workspace_path(), &job_id)?;
     if !job_dir.exists() {
-        return Err(crate::error::AppError::message(format!(
+        return Err(AppError::message(format!(
             "任务目录不存在: {}",
             job_dir.display()
         )));
@@ -167,23 +447,49 @@ pub fn open_job_directory(state: State<'_, AppState>, job_id: String) -> AppResu
 
 #[tauri::command]
 pub fn probe_sidecars(state: State<'_, AppState>) -> AppResult<SidecarStatus> {
-    let config = state.config.lock().expect("config lock");
-    Ok(sidecar::resolve_all(&config.sidecar_paths, None))
+    let configured_paths = state
+        .config
+        .lock()
+        .expect("config lock")
+        .sidecar_paths
+        .clone();
+    Ok(state.runner.resolve_sidecars(&configured_paths))
 }
 
 #[tauri::command]
-pub fn mark_job_placeholder_failed(
-    state: State<'_, AppState>,
-    job_id: String,
-    message: String,
-) -> AppResult<Job> {
-    let config = state.config.lock().expect("config lock");
-    let mut job = workspace::load_job(config.workspace_path(), &job_id)?;
-    job.status = crate::models::JobStatus::Failed;
-    job.error_message = Some(message);
-    job.updated_at = Utc::now();
-    workspace::save_job(config.workspace_path(), &job)?;
-    Ok(job)
+pub fn check_yt_dlp_update(state: State<'_, AppState>) -> AppResult<String> {
+    let configured_paths = state
+        .config
+        .lock()
+        .expect("config lock")
+        .sidecar_paths
+        .clone();
+    let status = state.runner.resolve_sidecars(&configured_paths);
+    let binary = status
+        .yt_dlp
+        .path
+        .ok_or_else(|| AppError::message("未找到 yt-dlp，无法检查更新"))?;
+
+    let output = std::process::Command::new(&binary)
+        .args(["-U"])
+        .output()
+        .map_err(|error| AppError::message(format!("执行 yt-dlp -U 失败: {error}")))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}").trim().to_string();
+    if !output.status.success() {
+        return Err(AppError::message(if combined.is_empty() {
+            format!("yt-dlp 更新失败，exit {:?}", output.status.code())
+        } else {
+            format!("yt-dlp 更新失败：{combined}")
+        }));
+    }
+    if combined.is_empty() {
+        Ok("yt-dlp 检查并更新完成（无额外输出）".to_string())
+    } else {
+        Ok(combined)
+    }
 }
 
 fn merge_pipeline(config: &AppConfig, request: Option<PipelineOptions>) -> PipelineOptions {
@@ -200,5 +506,23 @@ fn merge_pipeline(config: &AppConfig, request: Option<PipelineOptions>) -> Pipel
     if pipeline.template_id.is_none() {
         pipeline.template_id = config.default_template_id.clone();
     }
+    if pipeline.auto_summarize {
+        pipeline.auto_transcribe = true;
+    }
     pipeline
+}
+
+fn sanitize_log_name(name: &str) -> AppResult<String> {
+    let allowed = [
+        "download",
+        "record",
+        "transcribe",
+        "merge_transcript",
+        "summarize",
+    ];
+    if allowed.contains(&name) {
+        Ok(name.to_string())
+    } else {
+        Err(AppError::message(format!("不支持的日志类型: {name}")))
+    }
 }
