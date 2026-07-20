@@ -410,4 +410,4 @@ default_model = "claude-sonnet-4-5"
 - [x] 双协议总结 + 模板
 - [x] 流水线调度 / 重试 / 导出 / 托盘
 
-实现验证：27 项 Rust 单元测试、严格 Clippy、Rust 格式检查、TypeScript 类型检查与前端生产构建通过；Tauri release 可执行文件与 MSI 已生成。NSIS 打包因从 GitHub 下载外部工具包超时而未完成。真实下载、直播、转写和云端总结仍依赖本机安装对应 sidecar、模型文件、网络及有效 API Key，应在目标环境按实际来源完成验收。
+实现验证：当前 28 项 Rust 单元测试、严格 Clippy、Rust 格式检查、TypeScript 类型检查与前端生产构建均已重新执行并通过。此前交付已生成 Tauri release 可执行文件与 MSI；NSIS 打包当时因从 GitHub 下载外部工具包超时而未完成。自动检查不替代真实环境验收；下载、直播、转写和云端总结仍依赖本机安装对应 sidecar、模型文件、网络及有效 API Key，应在目标环境按实际来源完成验收。

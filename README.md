@@ -9,24 +9,26 @@
 - **Tauri 2** + **Rust** 编排
 - **React 19** + **TypeScript** + **Vite** 前端
 - 包管理：**pnpm**（请勿使用 npm / yarn 安装依赖）
-- Sidecar：`ffmpeg` / `yt-dlp` / `streamlink` / 本地转写（后续接入）
+- Sidecar：`ffmpeg` / `ffprobe` / `yt-dlp` / `streamlink` / whisper.cpp
 
-## 当前进度（初始化骨架）
+## 当前进度（v0.1 功能实现）
 
 已具备：
 
-- 任务中心 UI（列表、搜索、三个新建入口、设置只读预览）
-- Job 目录契约：`workspace/jobs/<job_id>/{media,transcript,summary,logs,source.json}`
-- 配置加载（应用配置目录 + 工作区分离）
-- Provider / 模板默认档案
-- Sidecar 探测（内置 → 配置路径 → PATH）
+- 统一 Job 任务中心：列表、搜索、步骤状态、日志、产物查看和目录打开
+- 三种入口：链接下载、直播分段录制、本地媒体导入
+- 自动流水线与单步重试：导入/下载/录制 → 分段转写 → 合并文字 → AI 总结
+- 直播录制保护：按时长分段、断流重连、磁盘阈值、心跳、停止与媒体合并
+- whisper.cpp 本地转写、单段重试、选段和字幕/纯文本合并
+- OpenAI 兼容与 Anthropic 双协议总结、自定义 base URL、代理和 Markdown 模板
+- Provider/模板多档案、环境变量 Key 覆盖、连通测试和日志脱敏
+- Sidecar 探测（内置 → 配置路径 → PATH）、版本展示和 yt-dlp 更新操作
+- Job 导出、启动恢复、单实例锁，以及录制期间托盘/关窗保活
+- 工作区目录契约：`workspace/jobs/<job_id>/{media,transcript,summary,logs,source.json}`
 
-尚未实现：
-
-- 真实下载 / 直播分段录制
-- 本地转写与字幕合并
-- 云端总结（OpenAI / Anthropic + 自定义 base URL）
-- 流水线自动执行、重试、导出、托盘保活等
+当前实现不等于目标环境已验收。真实下载、直播、转写和云端总结仍依赖
+本机 sidecar、whisper.cpp 模型、网络、代理及有效 API Key；安装包是否携带
+预期 sidecar 也应以实际打包产物为准。
 
 ## 开发环境
 
@@ -37,11 +39,12 @@
 - Rust 1.88+（Windows：`x86_64-pc-windows-msvc`）
 - [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)（Windows 需 WebView2；MSVC 构建工具用于完整桌面构建）
 
-可选（业务真正跑通时）：
+业务链路运行依赖（按使用能力安装或配置）：
 
 - `ffmpeg` / `ffprobe`
 - `yt-dlp`
 - `streamlink`
+- whisper.cpp `whisper-cli` 与 GGML 模型
 
 ### 安装与运行
 
@@ -71,8 +74,9 @@ pnpm build
 Rust 检查：
 
 ```bash
-cd src-tauri
-cargo check
+cargo +stable fmt --manifest-path "src-tauri/Cargo.toml" --all -- --check
+cargo +stable test --manifest-path "src-tauri/Cargo.toml"
+cargo +stable clippy --manifest-path "src-tauri/Cargo.toml" --all-targets -- -D warnings
 ```
 
 ### 包管理约定

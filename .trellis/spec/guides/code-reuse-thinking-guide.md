@@ -1,223 +1,101 @@
-# Code Reuse Thinking Guide
+# Code Reuse and Change Impact Guide
 
-> **Purpose**: Stop and think before creating new code - does it already exist?
+> Search for the existing owner before introducing a second implementation.
 
----
+## Project Owners to Reuse
 
-## The Problem
+| Concern | Existing owner |
+|---------|----------------|
+| Tauri command names and payload construction | `src/api.ts` |
+| Cross-layer TypeScript data mirrors | `src/types.ts` |
+| UI labels for Job enums | `src/App.tsx` exhaustive `Record` maps |
+| Job required steps and aggregate state | `Job::required_steps`, `Job::derived_status` |
+| Downstream state invalidation | `Job::invalidate_after_step` |
+| Downstream file cleanup | `pipeline::paths::remove_downstream_artifacts` |
+| Validated Job directory construction | `workspace::validated_job_dir` |
+| Atomic JSON publication | `storage::write_json_atomically` |
+| Step log names and secret redaction | `pipeline::logs` |
+| Sidecar lookup precedence | `sidecar` |
+| Pipeline sequencing and events | `pipeline::runner` |
+| Config candidate validation/public views | `config` |
 
-**Duplicated code is the #1 source of inconsistency bugs.**
+## Search Before Adding
 
-When you copy-paste or rewrite existing logic:
-- Bug fixes don't propagate
-- Behavior diverges over time
-- Codebase becomes harder to understand
+Search the repository before adding:
 
----
+- A command wrapper, request DTO, enum variant, or label.
+- A Job/artifact path or log filename.
+- A JSON write helper or UUID/path check.
+- A redaction regex or secret list.
+- Sidecar resolution, Windows console suppression, process-output handling, or
+  endpoint construction.
+- Dialog focus, stale-request, listener cleanup, or settings-ID reconciliation.
 
-## Before Writing New Code
+The correct result may be reuse, extension, or a new owner. Do not force a
+shared abstraction when one clear use is simpler, but do not create a third
+copy of non-trivial behavior.
 
-### Step 1: Search First
+## Paired Mechanisms
 
-```bash
-# Search for similar function names
-grep -r "functionName" .
+Some duplicated concepts intentionally exist in different layers and must be
+kept synchronized rather than merged:
 
-# Search for similar logic
-grep -r "keyword" .
-```
+- Rust Serde types <-> `src/types.ts`.
+- Rust direct argument names <-> `src/api.ts` camelCase invoke keys.
+- Job enum values <-> UI label and CSS state maps.
+- State invalidation <-> artifact cleanup.
+- Tauri plugin package <-> Rust plugin initialization <-> capability permission.
+- Bundled sidecar lookup <-> Tauri bundle resources <-> packaged output.
+- Config private model <-> public webview view.
 
-### Step 2: Ask These Questions
+For these pairs, add a cross-layer test/checklist rather than pretending one
+language or build step automatically updates the other.
 
-| Question | If Yes... |
-|----------|-----------|
-| Does a similar function exist? | Use or extend it |
-| Is this pattern used elsewhere? | Follow the existing pattern |
-| Could this be a shared utility? | Create it in the right place |
-| Am I copying code from another file? | **STOP** - extract to shared |
+## Abstraction Threshold
 
----
+Extract when at least one is true:
 
-## Common Duplication Patterns
+- Complex behavior is already repeated.
+- A contract has several consumers and one owner prevents drift.
+- Cleanup/error/privacy behavior must be uniform.
+- A component region has its own props and lifecycle.
 
-### Pattern 1: Copy-Paste Functions
+Keep local when all are true:
 
-**Bad**: Copying a validation function to another file
+- It has one use.
+- It is simple and self-explanatory.
+- Extraction would hide ownership or side effects.
+- No contract or invariants need sharing.
 
-**Good**: Extract to shared utilities, import where needed
+## High-Risk Change Searches
 
-### Pattern 2: Similar Components
+### New Job enum or step
 
-**Bad**: Creating a new component that's 80% similar to existing
+Search Rust matches, required steps, derived status, invalidation, artifact
+cleanup, TypeScript unions, labels, action visibility, logs, and CSS classes.
 
-**Good**: Extend existing component with props/variants
+### New config field
 
-### Pattern 3: Repeated Constants
+Search defaults, `SaveConfigRequest`, candidate update, validation, Serde
+compatibility, public view, frontend draft, save payload, dirty check, logs,
+exports, and product spec.
 
-**Bad**: Defining the same constant in multiple files
+### New sidecar or process
 
-**Good**: Single source of truth, import everywhere
+Search resolver status, configured paths, version probe, settings UI, process
+argv, output draining, Windows behavior, timeout/cancel, logs, packaging, and
+real-environment validation.
 
-### Pattern 4: Repeated Payload Field Extraction
+### New artifact or log
 
-**Bad**: Multiple consumers cast the same JSON/event fields locally:
+Search layout creation, Job relative reference, invalidation/cleanup, read
+command whitelist, UI tab, export inclusion/redaction, delete, and recovery.
 
-```typescript
-const description = (ev as { description?: string }).description;
-const context = (ev as { context?: ContextEntry[] }).context;
-```
+## Completion Checklist
 
-This is duplicated contract logic even when the code is only two lines. Each
-consumer now has its own definition of what a valid payload means.
-
-**Good**: Put the decoder, type guard, or projection next to the data owner:
-
-```typescript
-if (isThreadEvent(ev)) {
-  renderThreadEvent(ev);
-}
-```
-
-**Rule**: If the same untyped payload field is read in 2+ places, create a
-shared type guard / normalizer / projection before adding a third reader.
-
----
-
-## When to Abstract
-
-**Abstract when**:
-- Same code appears 3+ times
-- Logic is complex enough to have bugs
-- Multiple people might need this
-
-**Don't abstract when**:
-- Only used once
-- Trivial one-liner
-- Abstraction would be more complex than duplication
-
----
-
-## After Batch Modifications
-
-When you've made similar changes to multiple files:
-
-1. **Review**: Did you catch all instances?
-2. **Search**: Run grep to find any missed
-3. **Consider**: Should this be abstracted?
-
-### Reducers Should Use Exhaustive Structure
-
-When state is derived from action-like values (`action`, `kind`, `status`,
-`phase`), prefer a reducer with one `switch` over scattered `if/else` updates.
-
-```typescript
-// BAD - action-specific state transitions are hard to audit
-if (action === "opened") { ... }
-else if (action === "comment") { ... }
-else if (action === "status") { ... }
-
-// GOOD - one reducer owns the transition table
-switch (event.action) {
-  case "opened":
-    ...
-    return;
-  case "comment":
-    ...
-    return;
-}
-```
-
-This matters when the event log is the source of truth. A reducer is the
-documented replay model; display code and commands should not duplicate pieces
-of that replay model.
-
----
-
-## Checklist Before Commit
-
-- [ ] Searched for existing similar code
-- [ ] No copy-pasted logic that should be shared
-- [ ] No repeated untyped payload field extraction outside a shared decoder
-- [ ] Constants defined in one place
-- [ ] Similar patterns follow same structure
-- [ ] Reducer/action transitions live in one reducer or command dispatcher
-
----
-
-## Gotcha: Python if/elif/else Exhaustive Check
-
-**Problem**: Python's if/elif/else chains have no compile-time exhaustive check. When you add a new value to a `Literal` type (e.g., `Platform`), existing if/elif/else chains silently fall through to `else` with wrong defaults.
-
-**Symptom**: New platform works partially — some methods return Claude defaults instead of platform-specific values. No error is raised.
-
-**Example** (`cli_adapter.py`):
-```python
-# BAD: "gemini" falls through to else, returns "claude"
-@property
-def cli_name(self) -> str:
-    if self.platform == "opencode":
-        return "opencode"
-    else:
-        return "claude"  # gemini silently gets "claude"!
-
-# GOOD: explicit branch for every platform
-@property
-def cli_name(self) -> str:
-    if self.platform == "opencode":
-        return "opencode"
-    elif self.platform == "gemini":
-        return "gemini"
-    else:
-        return "claude"
-```
-
-**Prevention**: When adding a new value to a Python `Literal` type, search for ALL if/elif/else chains that switch on that type and add explicit branches. Don't rely on `else` being correct for new values.
-
----
-
-## Gotcha: Asymmetric Mechanisms Producing Same Output
-
-**Problem**: When two different mechanisms must produce the same file set (e.g., recursive directory copy for init vs. manual `files.set()` for update), structural changes (renaming, moving, adding subdirectories) only propagate through the automatic mechanism. The manual one silently drifts.
-
-**Symptom**: Init works perfectly, but update creates files at wrong paths or misses files entirely.
-
-**Prevention**:
-- **Best**: Eliminate the asymmetry — have the manual path call the automatic one (e.g., `collectTemplateFiles()` calls `getAllScripts()` instead of maintaining its own list)
-- **If asymmetry is unavoidable**: Add a regression test that compares outputs from both mechanisms
-- When migrating directory structures, search for ALL code paths that reference the old structure
-
-**Real example**: `trellis update` had a manual `files.set()` list for 11 scripts that `getAllScripts()` already tracked. Fix: replaced the manual list with a `for..of getAllScripts()` loop. See `update.ts` refactor in v0.4.0-beta.3.
-
----
-
-## Template File Registration (Trellis-specific)
-
-When adding new files to `src/templates/trellis/scripts/`:
-
-**Single registration point**: `src/templates/trellis/index.ts`
-
-1. Add `export const xxxScript = readTemplate("scripts/path/file.py");`
-2. Add to `getAllScripts()` Map
-
-That's it. `commands/update.ts` uses `getAllScripts()` directly — no manual sync needed.
-
-**Why this matters**: Without registration in `getAllScripts()`, `trellis update` won't sync the file to user projects. Bug fixes and features won't propagate.
-
-**History**: Before v0.4.0-beta.3, `update.ts` had its own hand-maintained file list that frequently fell out of sync with `getAllScripts()`. This caused 11 Python files to be silently skipped during `trellis update`. The fix was to eliminate the duplicate list and use `getAllScripts()` as the single source of truth.
-
-### Quick Checklist for New Scripts
-
-```bash
-# After adding a new .py file, verify it's in getAllScripts():
-grep -l "newFileName" src/templates/trellis/index.ts  # Should match
-```
-
-### Template Sync Convention
-
-`.trellis/scripts/` (dogfooded) and `packages/cli/src/templates/trellis/scripts/` (template) must stay identical. After editing `.trellis/scripts/`, always sync:
-
-```bash
-rsync -av --delete --exclude='__pycache__' .trellis/scripts/ packages/cli/src/templates/trellis/scripts/
-```
-
-**Gotcha**: Running rsync with wrong source/destination paths can create nested garbage directories (e.g., `.trellis/scripts/packages/cli/...`). Always double-check paths before running.
+- [ ] Existing owner and all references were searched.
+- [ ] One module owns each new invariant.
+- [ ] Intentional cross-language mirrors were updated together.
+- [ ] State transition and filesystem cleanup remain paired.
+- [ ] Repeated error/redaction/process/UI lifecycle logic was not copied.
+- [ ] Validation covers the contract rather than only the new helper.

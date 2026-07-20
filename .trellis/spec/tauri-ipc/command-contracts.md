@@ -1,0 +1,117 @@
+# Tauri Command Contracts
+
+> How application commands are defined, registered, wrapped, and consumed.
+
+## Single Command Path
+
+An application-specific command has four required locations:
+
+1. A typed `#[tauri::command]` handler in
+   `src-tauri/src/commands/mod.rs`.
+2. Registration in `tauri::generate_handler!` in `src-tauri/src/lib.rs`.
+3. A typed wrapper in `src/api.ts`.
+4. A caller that handles success, error, busy state, and stale-response rules.
+
+Request/response types may additionally require Rust model/config definitions
+and `src/types.ts` mirrors. A wrapper without registration compiles in
+TypeScript but fails at runtime.
+
+## Naming and Payload Shape
+
+Rust handler names and invoke command strings use snake_case. TypeScript wrapper
+functions use camelCase.
+
+Tauri applies different conventions at two levels:
+
+### Direct handler parameters
+
+For a Rust signature such as:
+
+```rust
+pub fn get_job(state: State<'_, AppState>, job_id: String) -> AppResult<Job>
+```
+
+the JavaScript invoke object uses a camelCase top-level parameter:
+
+```ts
+invoke<Job>("get_job", { jobId });
+```
+
+### Request envelope
+
+For a Rust handler accepting `request: RunJobRequest`, the top-level key is the
+parameter name, while fields inside the serialized request keep their Serde
+names:
+
+```ts
+invoke<void>("run_job", {
+  request: { job_id: jobId, step: step ?? null },
+});
+```
+
+Do not normalize nested DTO fields to camelCase unless the Rust type explicitly
+uses matching Serde renames.
+
+## Command Responsibilities
+
+Handlers should:
+
+- Deserialize typed input.
+- Perform cheap boundary and authorization/trust checks.
+- Acquire only the lock needed for the operation.
+- Snapshot configuration needed by background work.
+- Delegate filesystem, domain, process, and Provider behavior.
+- Return a public response type.
+
+Handlers should not embed full sidecar commands, duplicate workspace path
+construction, or implement a second Job state machine.
+
+## Blocking and Background Semantics
+
+State clearly whether a command:
+
+- Completes the operation before returning.
+- Starts a background Job and returns acceptance.
+- Performs network or process work synchronously.
+- Can modify an executable or remote/local resource.
+
+`run_job` and retry commands return before background completion. Completion is
+observed through persisted Job state and `job-updated`.
+
+Commands such as Provider testing, sidecar probing, and yt-dlp update currently
+perform blocking work. Do not add more blocking IPC paths without considering UI
+responsiveness, timeout, and cancellation.
+
+## Locking
+
+`AppState` contains config, an operation lock, and `RunnerState`. Keep lock scope
+small and avoid holding a mutex across slow process, filesystem traversal, or
+network work unless serialization is intentionally required.
+
+Same-Job exclusion belongs to `RunnerState`. Do not use the global operation
+lock as an implicit task queue.
+
+## Errors and Privacy
+
+Tauri errors currently serialize as strings. Return actionable redacted text,
+but do not make clients branch on wording. Public responses must use public
+config/provider views and must not include stored keys.
+
+## Plugin APIs
+
+Dialog and opener behavior is not a custom invoke command. A Tauri plugin change
+must align all three layers:
+
+1. JavaScript package/import.
+2. Rust plugin initialization in `lib.rs`.
+3. Capability permission in `src-tauri/capabilities/default.json`.
+
+## Review Checklist
+
+- [ ] Handler, registration, wrapper, and caller all exist.
+- [ ] Direct top-level parameters and nested DTO fields use the correct casing.
+- [ ] Return means acceptance or completion unambiguously.
+- [ ] Lock scope and background concurrency are explicit.
+- [ ] Filesystem/network/process/update side effects are visible in naming/UI.
+- [ ] Errors and responses are redacted and public-safe.
+- [ ] A desktop runtime smoke test covers command availability.
