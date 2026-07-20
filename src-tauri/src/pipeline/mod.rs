@@ -1,3 +1,4 @@
+pub mod douyin;
 pub mod download;
 pub mod export;
 pub mod logs;

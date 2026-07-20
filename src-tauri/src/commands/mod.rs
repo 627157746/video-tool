@@ -130,6 +130,8 @@ pub fn create_download_job(
         if url.is_empty() {
             return Err(AppError::message("下载链接不能为空"));
         }
+        // Persist the raw paste (including Douyin share text) so retries keep
+        // the original input; the download step extracts the real URL.
 
         let pipeline = merge_pipeline(&config, request.pipeline);
         let job = Job::new(

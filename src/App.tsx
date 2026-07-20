@@ -299,7 +299,8 @@ function App() {
   const segmentSelectionInFlightRef = useRef(false);
   const providerDraftsRef = useRef<ProviderProfileInput[]>([]);
   const settingsProxyRef = useRef("");
-  const modalInitialFocusRef = useRef<HTMLInputElement | null>(null);
+  const downloadUrlInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const liveUrlInputRef = useRef<HTMLInputElement | null>(null);
   const localFilePickerButtonRef = useRef<HTMLButtonElement | null>(null);
   const createTriggerRef = useRef<HTMLElement | null>(null);
 
@@ -680,8 +681,10 @@ function App() {
     }
     if (createMode === "import") {
       localFilePickerButtonRef.current?.focus();
+    } else if (createMode === "download") {
+      downloadUrlInputRef.current?.focus();
     } else {
-      modalInitialFocusRef.current?.focus();
+      liveUrlInputRef.current?.focus();
     }
     const backgroundElementStates = new Map<HTMLElement, boolean>();
     const makeBackgroundInert = () => {
@@ -2160,13 +2163,27 @@ function App() {
             <div className="form-grid">
               {(createMode === "download" || createMode === "live") && (
                 <label>
-                  <span>URL / 流地址</span>
-                  <input
-                    ref={modalInitialFocusRef}
-                    value={formUrl}
-                    onChange={(event) => setFormUrl(event.target.value)}
-                    placeholder="https://... 或 m3u8/flv（最佳努力）"
-                  />
+                  <span>
+                    {createMode === "download"
+                      ? "URL / 抖音分享文案"
+                      : "URL / 流地址"}
+                  </span>
+                  {createMode === "download" ? (
+                    <textarea
+                      ref={downloadUrlInputRef}
+                      value={formUrl}
+                      onChange={(event) => setFormUrl(event.target.value)}
+                      placeholder="粘贴视频链接，或抖音分享文案（含 v.douyin.com 短链）。最佳努力下载。"
+                      rows={4}
+                    />
+                  ) : (
+                    <input
+                      ref={liveUrlInputRef}
+                      value={formUrl}
+                      onChange={(event) => setFormUrl(event.target.value)}
+                      placeholder="https://... 或 m3u8/flv（最佳努力）"
+                    />
+                  )}
                 </label>
               )}
 

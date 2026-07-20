@@ -22,7 +22,8 @@ src-tauri/src/
     ├── runner.rs           # Execution coordination, persistence, events
     ├── paths.rs            # Artifact paths, media discovery, cleanup
     ├── logs.rs             # Step logs and redaction
-    ├── download.rs         # yt-dlp and local import
+    ├── download.rs         # yt-dlp, Douyin share-page path, local import
+    ├── douyin.rs           # Douyin share-text / short-link resolve + play URL
     ├── record.rs           # streamlink/ffmpeg live recording
     ├── transcribe.rs       # Audio extraction, whisper, transcript merge
     ├── summarize.rs        # Templates and Provider HTTP clients

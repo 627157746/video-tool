@@ -412,10 +412,25 @@ fn run_ingest(
                 }
             }));
             let result =
-                download::run_yt_dlp_download(job_dir, &url, &sidecars.yt_dlp, Some(callback))?;
+                download::run_download(job_dir, &url, &sidecars.yt_dlp, Some(callback))?;
             job.media_files = result.media_files;
             job.tool_path = Some(result.tool_path);
             job.tool_version = result.tool_version;
+            let should_fill_title = job
+                .source
+                .title
+                .as_ref()
+                .is_none_or(|value| value.trim().is_empty());
+            if should_fill_title {
+                if let Some(resolved_title) = result.resolved_title {
+                    let trimmed = resolved_title.trim();
+                    if !trimmed.is_empty() {
+                        // Prefer a short, single-line title for the task list.
+                        let shortened: String = trimmed.chars().take(80).collect();
+                        job.source.title = Some(shortened);
+                    }
+                }
+            }
         }
         JobKind::ImportLocal => {
             let local_path = job
