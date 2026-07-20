@@ -73,3 +73,36 @@ Replaced generic Trellis templates with source-backed frontend, Rust backend, Ta
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Douyin share-link download
+
+**Date**: 2026-07-20
+**Task**: Douyin share-link download
+**Branch**: `main`
+
+### Summary
+
+Implemented Douyin share-text/short-link download: resolve video id, scrape iesdouyin _ROUTER_DATA play_addr, rewrite playwm→play, download into job media with yt-dlp fallback; UI accepts multi-line share paste.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `490ec15` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
