@@ -106,3 +106,36 @@ Implemented Douyin share-text/short-link download: resolve video id, scrape iesd
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Markdown summary full-width render
+
+**Date**: 2026-07-20
+**Task**: Markdown summary full-width render
+**Branch**: `main`
+
+### Summary
+
+Job Markdown 总结改为 react-markdown 渲染，并改为通栏大阅读区（总结在上、合并字幕在下），解决纯文本 pre 显示与双列小框可读性差的问题。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d5c6837` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
