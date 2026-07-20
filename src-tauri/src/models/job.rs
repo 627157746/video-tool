@@ -55,6 +55,10 @@ pub struct PipelineOptions {
     pub auto_summarize: bool,
     pub provider_profile_id: Option<String>,
     pub template_id: Option<String>,
+    /// Override the global `transcribe_language` for this job. `None` means
+    /// follow the global config; `Some("auto")` forces auto-detection.
+    #[serde(default)]
+    pub transcribe_language: Option<String>,
 }
 
 impl Default for PipelineOptions {
@@ -64,6 +68,7 @@ impl Default for PipelineOptions {
             auto_summarize: false,
             provider_profile_id: None,
             template_id: None,
+            transcribe_language: None,
         }
     }
 }
@@ -541,6 +546,7 @@ mod tests {
                 auto_summarize: true,
                 provider_profile_id: None,
                 template_id: None,
+                transcribe_language: None,
             },
         );
         assert_eq!(job.step_statuses.len(), 4);
@@ -562,6 +568,7 @@ mod tests {
                 auto_summarize: true,
                 provider_profile_id: None,
                 template_id: None,
+                transcribe_language: None,
             },
         );
 
@@ -596,6 +603,7 @@ mod tests {
                 auto_summarize: true,
                 provider_profile_id: None,
                 template_id: None,
+                transcribe_language: None,
             },
         );
         for progress in &mut job.step_statuses {
@@ -649,6 +657,7 @@ mod tests {
                 auto_summarize: false,
                 provider_profile_id: None,
                 template_id: None,
+                transcribe_language: None,
             },
         );
         job.step_statuses

@@ -58,6 +58,28 @@ type LogName =
   | "merge_transcript"
   | "summarize";
 
+/** whisper.cpp `-l` codes; `auto` means omit `-l` and let whisper detect. */
+const TRANSCRIBE_LANGUAGE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "auto", label: "自动检测" },
+  { value: "zh", label: "中文" },
+  { value: "en", label: "英语" },
+  { value: "ja", label: "日语" },
+  { value: "ko", label: "韩语" },
+  { value: "yue", label: "粤语" },
+  { value: "fr", label: "法语" },
+  { value: "de", label: "德语" },
+  { value: "es", label: "西班牙语" },
+  { value: "ru", label: "俄语" },
+  { value: "pt", label: "葡萄牙语" },
+  { value: "it", label: "意大利语" },
+  { value: "th", label: "泰语" },
+  { value: "vi", label: "越南语" },
+  { value: "id", label: "印尼语" },
+  { value: "ms", label: "马来语" },
+  { value: "ar", label: "阿拉伯语" },
+  { value: "hi", label: "印地语" },
+];
+
 interface PathPickerFieldProps {
   label: string;
   value: string;
@@ -314,6 +336,7 @@ function App() {
   const [autoStart, setAutoStart] = useState(true);
   const [formProviderId, setFormProviderId] = useState("");
   const [formTemplateId, setFormTemplateId] = useState("");
+  const [formTranscribeLanguage, setFormTranscribeLanguage] = useState("auto");
 
   const [settingsWorkspace, setSettingsWorkspace] = useState("");
   const [settingsSegmentMinutes, setSettingsSegmentMinutes] = useState(30);
@@ -373,6 +396,7 @@ function App() {
     setAutoSummarize(nextConfig.default_auto_summarize);
     setFormProviderId(nextConfig.default_provider_profile_id ?? "");
     setFormTemplateId(nextConfig.default_template_id ?? "");
+    setFormTranscribeLanguage(nextConfig.transcribe_language);
   }, []);
 
   const clearSelectedJobState = useCallback(() => {
@@ -860,6 +884,7 @@ function App() {
       auto_summarize: autoSummarize,
       provider_profile_id: formProviderId || null,
       template_id: formTemplateId || null,
+      transcribe_language: formTranscribeLanguage,
     };
 
     try {
@@ -1919,11 +1944,23 @@ function App() {
                     </label>
                     <label>
                       <span>转写语言</span>
-                      <input
+                      <select
                         value={settingsTranscribeLanguage}
                         onChange={(event) => setSettingsTranscribeLanguage(event.target.value)}
-                        placeholder="auto / zh / en"
-                      />
+                      >
+                        {!TRANSCRIBE_LANGUAGE_OPTIONS.some(
+                          (option) => option.value === settingsTranscribeLanguage,
+                        ) && (
+                          <option value={settingsTranscribeLanguage}>
+                            {settingsTranscribeLanguage || "未知"}（当前配置）
+                          </option>
+                        )}
+                        {TRANSCRIBE_LANGUAGE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
                     </label>
                   </div>
                   <PathPickerField
@@ -2281,6 +2318,29 @@ function App() {
                   创建后立即运行
                 </label>
               </div>
+
+              {autoTranscribe && (
+                <label>
+                  <span>转写语言</span>
+                  <select
+                    value={formTranscribeLanguage}
+                    onChange={(event) => setFormTranscribeLanguage(event.target.value)}
+                  >
+                    {!TRANSCRIBE_LANGUAGE_OPTIONS.some(
+                      (option) => option.value === formTranscribeLanguage,
+                    ) && (
+                      <option value={formTranscribeLanguage}>
+                        {formTranscribeLanguage || "未知"}（当前配置）
+                      </option>
+                    )}
+                    {TRANSCRIBE_LANGUAGE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
 
               {autoSummarize && (
                 <div className="two-col">

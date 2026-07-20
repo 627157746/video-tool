@@ -500,6 +500,7 @@ fn merge_pipeline(config: &AppConfig, request: Option<PipelineOptions>) -> Pipel
         auto_summarize: config.default_auto_summarize,
         provider_profile_id: config.default_provider_profile_id.clone(),
         template_id: config.default_template_id.clone(),
+        transcribe_language: None,
     });
 
     if pipeline.provider_profile_id.is_none() {
@@ -508,6 +509,17 @@ fn merge_pipeline(config: &AppConfig, request: Option<PipelineOptions>) -> Pipel
     if pipeline.template_id.is_none() {
         pipeline.template_id = config.default_template_id.clone();
     }
+    // `None` (or empty/whitespace) means "follow the global config"; resolve it
+    // eagerly so the persisted job snapshot records the effective language and
+    // transcribe.rs can read a single source of truth at run time.
+    let resolved_transcribe_language = pipeline
+        .transcribe_language
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| config.transcribe_language.trim().to_string());
+    pipeline.transcribe_language = Some(resolved_transcribe_language);
     if pipeline.auto_summarize {
         pipeline.auto_transcribe = true;
     }

@@ -24,6 +24,7 @@ export interface PipelineOptions {
   auto_summarize: boolean;
   provider_profile_id?: string | null;
   template_id?: string | null;
+  transcribe_language?: string | null;
 }
 
 export interface JobListItem {

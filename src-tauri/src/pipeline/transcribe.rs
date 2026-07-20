@@ -114,9 +114,19 @@ pub fn transcribe_media_segments(
                 "-of",
                 &output_base.to_string_lossy(),
             ]);
-            if config.transcribe_language != "auto" && !config.transcribe_language.trim().is_empty()
-            {
-                command.args(["-l", config.transcribe_language.trim()]);
+            // merge_pipeline resolves `pipeline.transcribe_language` to the
+            // effective value (job override or global config). Fall back to the
+            // global config again so manual edits to old `source.json` files
+            // that predate this field still transcribe with a sane language.
+            let effective_language = job
+                .pipeline
+                .transcribe_language
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(config.transcribe_language.trim());
+            if effective_language != "auto" && !effective_language.is_empty() {
+                command.args(["-l", effective_language]);
             }
             let output = command.output().map_err(|error| {
                 AppError::message(format!(
