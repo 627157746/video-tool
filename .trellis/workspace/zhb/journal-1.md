@@ -40,3 +40,36 @@ Stabilized the full media pipeline and persistence, completed the synchronized f
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: Bootstrap Project Trellis Specifications
+
+**Date**: 2026-07-20
+**Task**: Bootstrap Project Trellis Specifications
+**Branch**: `main`
+
+### Summary
+
+Replaced generic Trellis templates with source-backed frontend, Rust backend, Tauri IPC, persistence, pipeline, sidecar, security, and validation guidance; synchronized README and product verification status; validated TypeScript build and all Rust quality gates.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9ed8fd5` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
