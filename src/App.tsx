@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
 import {
   checkYtDlpUpdate,
   createDownloadJob,
@@ -1734,17 +1735,27 @@ function App() {
                     </article>
 
                     {(transcriptText || summaryText) && (
-                      <div className="artifact-grid">
-                        {transcriptText && (
-                          <article className="card soft">
-                            <h3>合并字幕</h3>
-                            <pre className="artifact-view">{transcriptText}</pre>
+                      <div className="artifact-stack">
+                        {summaryText && (
+                          <article className="card soft summary-card">
+                            <div className="artifact-card-header">
+                              <h3>Markdown 总结</h3>
+                              <span className="muted small">可读文档视图</span>
+                            </div>
+                            <div className="markdown-view">
+                              <ReactMarkdown>{summaryText}</ReactMarkdown>
+                            </div>
                           </article>
                         )}
-                        {summaryText && (
-                          <article className="card soft">
-                            <h3>Markdown 总结</h3>
-                            <pre className="artifact-view markdown-view">{summaryText}</pre>
+                        {transcriptText && (
+                          <article className="card soft transcript-card">
+                            <div className="artifact-card-header">
+                              <h3>合并字幕</h3>
+                              <span className="muted small">原文对照</span>
+                            </div>
+                            <pre className="artifact-view transcript-view">
+                              {transcriptText}
+                            </pre>
                           </article>
                         )}
                       </div>
