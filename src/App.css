@@ -1547,7 +1547,8 @@ button:disabled {
   background: transparent;
   color: #e4e4e7;
   font-size: 0.875rem;
-  white-space: pre;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .markdown-view table {
