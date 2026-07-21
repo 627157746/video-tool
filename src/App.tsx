@@ -561,23 +561,25 @@ function App() {
     setSettingsFfprobe(nextConfig.sidecar_paths.ffprobe ?? "");
     setSettingsStreamlink(nextConfig.sidecar_paths.streamlink ?? "");
     setSettingsTranscribe(nextConfig.sidecar_paths.transcribe ?? "");
-    const nextProviderDrafts = nextConfig.providers.map((provider) => {
-      const normalizedModels = normalizeProviderModels(
-        provider.models ?? [],
-        provider.default_model,
-      );
-      return {
-        id: provider.id,
-        name: provider.name,
-        protocol: provider.protocol === "anthropic" ? "anthropic" : "openai",
-        base_url: provider.base_url,
-        api_key: null,
-        api_key_env: provider.api_key_env ?? null,
-        default_model: normalizedModels.default_model,
-        models: normalizedModels.models,
-        extra_headers: provider.extra_headers,
-      };
-    });
+    const nextProviderDrafts: ProviderProfileInput[] = nextConfig.providers.map(
+      (provider) => {
+        const normalizedModels = normalizeProviderModels(
+          provider.models ?? [],
+          provider.default_model,
+        );
+        return {
+          id: provider.id,
+          name: provider.name,
+          protocol: provider.protocol === "anthropic" ? "anthropic" : "openai",
+          base_url: provider.base_url,
+          api_key: null,
+          api_key_env: provider.api_key_env ?? null,
+          default_model: normalizedModels.default_model,
+          models: normalizedModels.models,
+          extra_headers: provider.extra_headers,
+        };
+      },
+    );
     setProviderDrafts(nextProviderDrafts);
     setSelectedProviderIndex((currentIndex) => {
       const previousProviderId =
