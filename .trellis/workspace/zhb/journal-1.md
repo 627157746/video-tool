@@ -432,3 +432,36 @@ Added AppConfig.job_groups catalog, settings UI for CRUD/reorder, resolve-or-cre
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: Job groups catalog and filters
+
+**Date**: 2026-07-21
+**Task**: Job groups catalog and filters
+**Branch**: `main`
+
+### Summary
+
+Added managed job group catalog, settings CRUD, create/detail select UI, list filter chips, and cascade clear on group delete. Validated via fmt/test/clippy/typecheck/build.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2db1495` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
