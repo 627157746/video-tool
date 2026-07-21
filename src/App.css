@@ -290,6 +290,7 @@ html,
 body,
 #root {
   margin: 0;
+  height: 100%;
   min-height: 100%;
 }
 
@@ -297,6 +298,7 @@ body {
   min-width: 320px;
   background: var(--body-bg);
   color: var(--text);
+  overflow: hidden;
 }
 
 button,
@@ -326,7 +328,8 @@ button:disabled {
 /* ── Shell ── */
 
 .app-shell {
-  min-height: 100vh;
+  height: 100%;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
   position: relative;
@@ -375,8 +378,8 @@ button:disabled {
   background: var(--topbar-bg);
   backdrop-filter: blur(20px) saturate(1.4);
   -webkit-backdrop-filter: blur(20px) saturate(1.4);
-  position: sticky;
-  top: 0;
+  /* Outside the scrollport (.content); no sticky needed. */
+  flex-shrink: 0;
   z-index: 10;
 }
 
@@ -723,6 +726,28 @@ button:disabled {
   min-height: 0;
   min-width: 0;
   width: 100%;
+  /* Primary scrollport so sticky settings header / nav work. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.content::-webkit-scrollbar {
+  width: 10px;
+}
+
+.content::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--radius-full);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.content::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: content-box;
+  border: 2px solid transparent;
 }
 
 .hero-strip {
@@ -2394,15 +2419,28 @@ textarea:focus-visible,
 
 /* ── Settings page polish ── */
 
+/* Fixed chrome (app topbar + settings title); only the body scrolls. */
+.content.content-settings {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+
 .panel.settings {
   width: 100%;
   max-width: none;
   min-width: 0;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   box-sizing: border-box;
 }
 
 .settings .panel-header {
-  margin-bottom: 1rem;
+  flex-shrink: 0;
+  margin-bottom: 0.85rem;
 }
 
 .visually-hidden {
@@ -2421,8 +2459,10 @@ textarea:focus-visible,
   display: grid;
   grid-template-columns: minmax(11.5rem, 14.5rem) minmax(0, 1fr);
   gap: 1rem 1.15rem;
-  align-items: start;
+  align-items: stretch;
   min-width: 0;
+  min-height: 0;
+  flex: 1;
 }
 
 .settings-nav {
@@ -2433,8 +2473,68 @@ textarea:focus-visible,
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface-soft);
-  position: sticky;
-  top: 4.25rem;
+  align-self: start;
+  max-height: 100%;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.settings-main {
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.85rem;
+  align-content: start;
+  padding-right: 0.15rem;
+  /* Scroll clearance under the fixed save button — not a permanent bottom bar. */
+  padding-bottom: 4rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.settings-main::-webkit-scrollbar,
+.settings-nav::-webkit-scrollbar {
+  width: 8px;
+}
+
+.settings-main::-webkit-scrollbar-thumb,
+.settings-nav::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--radius-full);
+}
+
+/* Fixed save control: button only, no tray/pill/bar chrome. */
+.settings-fab {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.15rem;
+  z-index: 40;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.5rem;
+  width: auto;
+  height: auto;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
+  outline: none;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  pointer-events: none;
+}
+
+.settings-fab > * {
+  pointer-events: auto;
 }
 
 .settings-nav-item {
@@ -2497,12 +2597,6 @@ textarea:focus-visible,
   border-color: var(--accent-border);
 }
 
-.settings-main {
-  min-width: 0;
-  display: grid;
-  gap: 0.85rem;
-}
-
 .settings-section-intro {
   display: grid;
   gap: 0.2rem;
@@ -2555,13 +2649,15 @@ textarea:focus-visible,
 @media (max-width: 960px) {
   .settings-layout {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .settings-nav {
-    position: static;
     flex-direction: row;
     flex-wrap: nowrap;
+    max-height: none;
     overflow-x: auto;
+    overflow-y: hidden;
     gap: 0.3rem;
     padding: 0.3rem;
     scrollbar-width: thin;
@@ -2571,6 +2667,11 @@ textarea:focus-visible,
   .settings-nav-item {
     flex: 0 0 auto;
     white-space: nowrap;
+  }
+
+  .settings-fab {
+    right: 0.85rem;
+    bottom: 0.85rem;
   }
 
   .settings .sidecar-list {

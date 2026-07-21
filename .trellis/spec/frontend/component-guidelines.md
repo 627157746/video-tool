@@ -72,6 +72,9 @@ extract shared dialog behavior rather than duplicating the existing effect.
 - Settings layout should fill the content area on wide windows (`max-width: none`
   on `.panel.settings`); do not reintroduce a fixed settings max-width that
   leaves large empty side gutters fullscreen.
+- Settings uses a fixed chrome layout: app topbar + settings title stay put;
+  only `.settings-main` (and the left nav when tall) scrolls. Save actions live in
+  a fixed bottom-right `.settings-fab`, not in the settings header.
 - Respect the current desktop minimum window and responsive breakpoints.
 
 ## Avoid

@@ -2627,7 +2627,9 @@ function App() {
         </div>
       )}
 
-      <main className="content">
+      <main
+        className={view === "settings" ? "content content-settings" : "content"}
+      >
         {view === "jobs" ? (
           <>
             <section className="hero-strip">
@@ -3944,28 +3946,8 @@ function App() {
               <div>
                 <h1>设置</h1>
                 <p className="muted">
-                  工作区与 API Key 分离存放。按左侧分区管理，修改后点右上角保存。
+                  工作区与 API Key 分离存放。按左侧分区管理，修改后点右下角保存。
                 </p>
-              </div>
-              <div className="detail-actions">
-                {settingsSection === "sidecars" && (
-                  <button
-                    className="btn secondary"
-                    type="button"
-                    disabled={isBusy}
-                    onClick={() => void handleCheckYtDlp()}
-                  >
-                    检查并更新 yt-dlp
-                  </button>
-                )}
-                <button
-                  className="btn"
-                  type="button"
-                  disabled={isBusy}
-                  onClick={() => void handleSaveSettings()}
-                >
-                  保存设置
-                </button>
               </div>
             </div>
 
@@ -5758,6 +5740,29 @@ function App() {
           </section>
         )}
       </main>
+
+      {view === "settings" && (
+        <div className="settings-fab" role="group" aria-label="设置操作">
+          {settingsSection === "sidecars" && (
+            <button
+              className="btn secondary"
+              type="button"
+              disabled={isBusy}
+              onClick={() => void handleCheckYtDlp()}
+            >
+              检查并更新 yt-dlp
+            </button>
+          )}
+          <button
+            className="btn"
+            type="button"
+            disabled={isBusy}
+            onClick={() => void handleSaveSettings()}
+          >
+            保存设置
+          </button>
+        </div>
+      )}
 
       {createMode && (
         <div className="modal-backdrop" role="presentation">
