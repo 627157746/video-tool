@@ -11,9 +11,11 @@
 - 包管理：**pnpm**（请勿使用 npm / yarn 安装依赖）
 - Sidecar：`ffmpeg` / `ffprobe` / `yt-dlp` / `streamlink` / whisper.cpp
 
-## 当前进度（v0.1 功能实现）
+## 当前版本
 
-已具备：
+应用版本 **`0.2.0`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+
+### v0.1 基线
 
 - 统一 Job 任务中心：列表、搜索、步骤状态、日志、产物查看和目录打开
 - 三种入口：链接下载、直播分段录制、本地媒体导入
@@ -25,6 +27,17 @@
 - Sidecar 探测（内置 → 配置路径 → PATH）、版本展示和 yt-dlp 更新操作
 - Job 导出、启动恢复、单实例锁，以及录制期间托盘/关窗保活
 - 工作区目录契约：`workspace/jobs/<job_id>/{media,transcript,summary,logs,source.json}`
+
+### v0.2 增量（P0–P4 MVP，已交付）
+
+- 全局并发队列 / 排队状态、工作区健康诊断与可安全修复
+- 批量 URL + `batch_id`、Cookie / 浏览器登录态辅助下载
+- 稳定 `error_code` 与失败修复建议
+- 术语表、转写模型档位、章节大纲（`Chapterize`）、多模板总结
+- 跨 Job 本地全文检索（`workspace/index/`）
+- 依赖向导、模型扫描、配置导入导出（默认去 Key）、检查更新
+
+细节与边界见 [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md) 第 14–15 节。
 
 当前实现不等于目标环境已验收。真实下载、直播、转写和云端总结仍依赖
 本机 sidecar、whisper.cpp 模型、网络、代理及有效 API Key；安装包是否携带
