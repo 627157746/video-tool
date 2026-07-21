@@ -337,3 +337,36 @@ Fixed Markdown summary display when models wrap whole answers in code fences. St
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: Job detail top tabs and editable titles
+
+**Date**: 2026-07-21
+**Task**: Job detail top tabs and editable titles
+**Branch**: `main`
+
+### Summary
+
+Restructured job detail into top horizontal tabs, fixed action button layout, split Markdown summary and transcript into separate sections, and added cross-layer update_job_title with running-job safeguards. Validated via typecheck, build, cargo check, and cargo test.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0e7ceb8` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
