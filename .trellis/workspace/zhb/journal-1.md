@@ -401,3 +401,34 @@ Added Job.group field, update_job_group IPC, create-time group, list filter chip
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: Managed job groups
+
+**Date**: 2026-07-21
+**Task**: Managed job groups
+**Branch**: `main`
+
+### Summary
+
+Added AppConfig.job_groups catalog, settings UI for CRUD/reorder, resolve-or-create on job create/update, cascade clear on delete.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
