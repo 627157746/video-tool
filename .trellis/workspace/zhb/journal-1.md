@@ -370,3 +370,34 @@ Restructured job detail into top horizontal tabs, fixed action button layout, sp
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: Job custom groups
+
+**Date**: 2026-07-21
+**Task**: Job custom groups
+**Branch**: `main`
+
+### Summary
+
+Added Job.group field, update_job_group IPC, create-time group, list filter chips and detail editor for custom grouping.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
