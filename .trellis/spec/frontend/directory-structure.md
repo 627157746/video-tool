@@ -6,14 +6,19 @@
 
 ```text
 src/
-├── main.tsx       # React root, StrictMode, and early theme apply
-├── App.tsx        # Application shell, task center, settings, dialogs
-├── App.css        # Theme tokens (light/dark + accent), layout, states, responsive rules
-├── theme.ts       # UI theme preferences (mode/accent), localStorage, document dataset
-├── api.ts         # Typed wrappers for application-specific Tauri commands
-├── types.ts       # TypeScript mirrors of Rust IPC and persisted domain data
-├── vite-env.d.ts  # Vite ambient types
-└── assets/        # Bundled frontend assets, when needed
+├── main.tsx                 # React root, StrictMode, and early theme apply
+├── App.tsx                  # Shell + orchestration + composed panels/dialogs
+├── App.css                  # Theme tokens (light/dark + accent), layout, states
+├── theme.ts                 # UI theme preferences (mode/accent), localStorage
+├── api.ts                   # Typed wrappers for application-specific Tauri commands
+├── types.ts                 # TypeScript mirrors of Rust IPC and domain data
+├── labels.ts                # Job kind/status/step display labels and formatters
+├── constants.ts             # Settings/detail section defs, log names, language options
+├── jobUtils.ts              # List merge, group resolve, provider model helpers
+├── components/
+│   └── PathPickerField.tsx  # Shared path picker control
+├── vite-env.d.ts
+└── assets/
 ```
 
 Related boundaries:
@@ -55,14 +60,14 @@ checked against the Rust Serde source described in `../tauri-ipc/`.
 
 ### `App.tsx`
 
-`App.tsx` currently contains most product UI and asynchronous coordination. It
-is a historical concentration point, not evidence that every new feature
-should be appended there. Keep a small, local change in place when extraction
-would add indirection; extract a named component or hook when a region has its
-own props, lifecycle, repeated behavior, or independently testable purpose.
+`App.tsx` owns application shell navigation, toast banners, Job/config
+orchestration (events, polling, request-version guards), and composes the
+task-center / settings UI. Prefer extracting pure labels into `labels.ts`,
+section constants into `constants.ts`, and pure Job/group helpers into
+`jobUtils.ts` before growing `App.tsx` further. Extract named components under
+`components/` when a region has its own props and lifecycle.
 
-`PathPickerField` is the current example of a local reusable component with a
-typed props interface.
+`PathPickerField` is the shared path picker control.
 
 ### `App.css`
 

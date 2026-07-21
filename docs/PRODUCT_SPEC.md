@@ -177,6 +177,8 @@ v0.1 实现已覆盖下载、本地导入、直播分段录制、本地转写与
 
 ```text
 workspace/
+  index/
+    search.sqlite3          # 跨 Job 全文检索 FTS 索引（v0.2 P3；无密钥）
   jobs/
     <job_id>/
       source.json           # 来源、参数、工具版本、provider/template id（无 Key）
@@ -193,8 +195,9 @@ workspace/
         srt.srt             # 可选：合并字幕
         raw.json            # 可选：合并后带时间轴结构
       summary/
-        summary.md          # 正式总结产出
-        meta.json           # 使用的 provider_profile_id、template_id、模型名、时间等
+        summary.md          # 主模板总结产出（兼容路径）
+        by_template/        # 多模板额外产物：<template_id>.md（v0.2 P3）
+        meta.json           # provider_profile_id、template_ids、模型名、时间等（无 Key）
       logs/
         download.log
         record.log
@@ -443,7 +446,7 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 
 ## 14. v0.2+ 路线图（已锁定选型）
 
-> 状态：范围与分期已锁定（2026-07-21）；**尚未实现**。  
+> 状态：范围与分期已锁定（2026-07-21）；**P0–P4 均已实现**（安装分发体验为 MVP：探测指引、模型扫描、配置迁移、检查更新）。  
 > 原则：仍以统一 Job 为中心；小步可逆；密钥与 Cookie 永不进入任务导出包；平台相关能力保持「最佳努力」。  
 > 实现顺序以依赖为准：**地基 → 吞吐获取 → 文字质量 → 知识产出 → 安装分发**（安装分发可与中段并行，但不得阻塞业务竖切）。
 
@@ -475,6 +478,8 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 
 ### 14.2 P0 — 地基
 
+> **实现状态（2026-07-21）**：P0 三项已落地（见 task `07-21-v02-p0-foundation`）。自动化：Rust 单元测试 / Clippy / fmt、`pnpm typecheck` / `pnpm build` 已通过；真实多任务排队与 sidecar 环境仍需本机验收。
+
 #### 14.2.1 前端结构拆分
 
 | 项 | 决策 |
@@ -482,6 +487,8 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 | 动机 | 任务中心单文件过大，后续队列、向导、批量创建、设置诊断难以安全改动 |
 | MVP | 按界面边界拆为任务列表、任务详情、创建对话框、设置分区与共享 hooks；**不改变 IPC 语义与业务行为** |
 | 非目标 | 借拆分重做信息架构或换 UI 框架 |
+
+- [x] 抽出 `labels.ts` / `constants.ts` / `jobUtils.ts` / `components/PathPickerField.tsx`；`App.tsx` 仍负责编排与主界面合成（后续可继续按面板拆文件）
 
 #### 14.2.2 工作区健康检查
 
@@ -491,6 +498,10 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 | 修复 | 标记 interrupted/失败并给出重试指引；必要时从 `media/` 重建 segment 索引（复用已有重建逻辑） |
 | 磁盘 | 展示工作区所在卷剩余空间与阈值提示（与直播磁盘保护同一心智） |
 | 非目标 | 自动删除用户媒体；云端修复 |
+
+- [x] IPC：`inspect_workspace_health` / `repair_workspace_health`
+- [x] 设置页「工作区诊断」分区：扫描摘要 + 修复可安全项（中断 running、残留 queued、空媒体索引重建）
+- [x] 启动恢复：`running`→失败；`queued`→pending（内存队列不跨进程）
 
 #### 14.2.3 全局并发与队列
 
@@ -502,6 +513,10 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 | 状态 | 建议显式 `Queued`（或等价可序列化状态）+ 可选队列位置展示 |
 | UI | 列表可见「排队中 / 第 N 位」；不要求本期做手动插队 |
 | 非目标 | 复杂优先级策略、跨机器调度 |
+
+- [x] 配置：`max_concurrent_jobs`（默认 2）、`max_live_records`（默认 1）；旧配置 Serde 默认兼容
+- [x] 调度：创建 / run / 重试 / 分段重试统一入队；FIFO + 结束时 pump
+- [x] 状态：`JobStatus::Queued`；列表 `queue_position`（1-based）
 
 ### 14.3 P1 — 吞吐与获取
 
@@ -516,6 +531,10 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 | 失败 | 单 Job 失败不影响同批其它 Job |
 | 非目标 | 播放列表深度解析、父子编排、批内依赖图（后置） |
 
+- [x] IPC：`create_download_jobs_batch`（服务端拆行；单条/单短链分享仍为 1 个 Job 且 `batch_id=null`；≥2 条共享 `batch_id`）
+- [x] Job / 列表字段：`batch_id`（旧 `source.json` 缺省兼容）
+- [x] UI：下载创建支持多行；列表批次筛选芯片 + 搜索/卡片展示 batch 前缀
+
 #### 14.3.2 Cookie / 浏览器登录态辅助下载
 
 | 项 | 决策 |
@@ -527,6 +546,11 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 | 范围 | MVP 优先绑定 **yt-dlp 下载路径**；其它解析路径（如站点专用 resolver）是否共用同一认证源可后置，默认不自动扩展 |
 | 非目标 | 内嵌登录 WebView、自动扫描浏览器配置目录、平台官方 OAuth 集成 |
 
+- [x] 配置：`download_cookies_file` / `download_cookies_from_browser`（Serde 默认兼容旧配置）
+- [x] Job：`source.download_cookies_mode`（inherit/none/file/browser）+ 路径/浏览器元数据
+- [x] yt-dlp：注入 `--cookies` 或 `--cookies-from-browser`；日志只写路径/浏览器名
+- [x] UI：设置默认 Cookie；新建下载可覆盖
+
 #### 14.3.3 从失败处继续向导
 
 | 项 | 决策 |
@@ -535,6 +559,10 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 | 后端 | 逐步引入稳定 **`error_code`**（示例：`SIDECAR_MISSING`、`AUTH_REQUIRED`、`CONTEXT_TOO_LONG`、`DISK_GUARD`、`NETWORK` 等），错误文案仍可读 |
 | 前端 | 按 `current_step` + `error_code`（及必要上下文）映射一键动作：重试本步、打开日志/目录、检查 sidecar、缩小选段、切换 Provider/模型、引导补充 Cookie 等 |
 | 非目标 | 静默全自动修复、机器学习决策树 |
+
+- [x] Job / 列表：`error_code`（旧 `source.json` 缺省兼容）；失败落盘时分类写入
+- [x] 分类器：启发式关键词 + `current_step`（`SIDECAR_MISSING` / `AUTH_REQUIRED` / `CONTEXT_TOO_LONG` / `DISK_GUARD` / `NETWORK` / 步骤级失败码等）
+- [x] UI：任务详情「修复建议」卡片 + 一键动作（重试本步、日志/目录、设置、分段、Provider）
 
 ### 14.4 P2 — 文字质量
 
@@ -569,6 +597,12 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 | 与总结 | 模板可增加变量如 `{{chapters}}`；**不**在本期强制 map-reduce 全文总结；超长仍可失败 + 选段缩小（与 v0.1 一致） |
 | 非目标 | 写入视频容器章节轨、剪辑级切条导出 |
 
+- [x] 配置：全局 `glossary`（热词 + `from→to`）、`apply_as_whisper_prompt` / `apply_post_replace`；转写模型档位 `speed|balanced|quality|custom` + 路径预设
+- [x] 转写：whisper `--prompt` 注入热词；合并后可选整词替换；Job 记录 `glossary_hash`
+- [x] 单段对比：重试前复制 `.prev.txt`；详情「对比上一版」
+- [x] `JobStep::Chapterize`：`transcript/chapters.json` + `chapters.md`（SRT 间隙 / 段落启发式）；自动总结前可选执行
+- [x] 模板变量 `{{chapters}}`；UI 设置术语表/档位/章节开关；流水线展示章节步骤
+
 ### 14.5 P3 — 知识产出与检索
 
 #### 14.5.1 多模板一次跑多份产出
@@ -591,6 +625,15 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 | 隐私 | 仅本地；索引目录建议在工作区下独立路径（如 `workspace/index/`），不进入含密钥的配置区 |
 | 非目标 | 云端索引、向量语义搜索（后置） |
 
+**P3 实现勾选（2026-07-21）**
+
+- [x] `pipeline.template_ids` 有序列表 + 兼容 `template_id`；创建/更新流水线支持多模板
+- [x] `summarize` 按序调用；主产物 `summary/summary.md`，其余 `summary/by_template/<id>.md`；`meta.json` 记录 `template_ids` / 部分失败
+- [x] 单模板失败不删已成功产物；全部失败才标记步骤失败
+- [x] SQLite FTS5：`workspace/index/search.sqlite3`；索引 plain + summary + by_template
+- [x] 增量：`persist` 后 upsert；删除 Job 时 remove；`rebuild_search_index` IPC
+- [x] UI：多模板勾选、多产物切换、任务列表全文检索与结果跳转
+
 ### 14.6 P4 — 安装与分发体验
 
 | 能力 | MVP | 非目标 / 后置 |
@@ -600,6 +643,15 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 | 配置导入导出 | 导出/导入 Provider、模板、分组、流水线默认等；**默认剥离 API Key** | 含 Key 的加密导出可后置 |
 | 应用更新 | 「检查更新」：比较版本、展示说明、打开发布页下载 | 完备签名静默更新与强制升级 |
 | 与 P0 健康检查 | 设置中「诊断」可聚合 sidecar、磁盘、工作区、版本信息 | — |
+
+**P4 实现勾选（2026-07-21）**
+
+- [x] 依赖向导：`get_dependency_report` + 设置「Sidecar」页指引（必需缺失汇总）
+- [x] 模型管理：`list_transcribe_models` / 打开目录；扫描 GGML/GGUF；校验当前选用
+- [x] 配置导出/导入：默认剥离 Key；导入保留本机同 ID Key；任务运行中禁止导入
+- [x] 检查更新：`check_app_update`（可选 `VIDEO_TOOL_RELEASE_API`）+ 打开发布页
+- [x] 系统诊断：`get_system_diagnostics` 聚合版本 / sidecar / 模型 / 磁盘 / 工作区
+- [x] UI：设置分区 models / backup；diagnostics 完整诊断
 
 ### 14.7 架构挂钩（实现约束）
 

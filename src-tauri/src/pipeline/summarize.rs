@@ -1,5 +1,5 @@
 use super::{logs, paths};
-use crate::config::{AppConfig, ProviderProfile, SummaryTemplate};
+use crate::config::{AppConfig, ProviderProfile};
 use crate::error::{AppError, AppResult};
 use crate::models::Job;
 use reqwest::blocking::{Client, RequestBuilder};
@@ -27,7 +27,14 @@ pub fn summarize_job(job_dir: &Path, job: &mut Job, config: &AppConfig) -> AppRe
 
     let provider = resolve_provider(job, config)?;
     let model_name = resolve_model(job, provider)?;
-    let template = resolve_template(job, config)?;
+    let available_ids: Vec<String> = config.templates.iter().map(|t| t.id.clone()).collect();
+    let template_ids = job
+        .pipeline
+        .effective_template_ids(config.default_template_id.as_deref(), &available_ids);
+    if template_ids.is_empty() {
+        return Err(AppError::message("未选择总结模板"));
+    }
+
     let api_key = config.resolve_api_key(provider).ok_or_else(|| {
         AppError::message(format!(
             "Provider“{}”缺少 API Key；请配置 {} 或在配置文件填写 Key",
@@ -36,75 +43,181 @@ pub fn summarize_job(job_dir: &Path, job: &mut Job, config: &AppConfig) -> AppRe
         ))
     })?;
     let secret_values = config.secret_values();
-    let user_prompt = render_template(
-        &template.user_template,
-        &job.display_title(),
-        job.source.url.as_deref().unwrap_or("本地文件"),
-        job.duration_label.as_deref().unwrap_or("未知"),
-        &transcript,
-    );
+    let chapters_text = super::chapterize::chapters_template_text(job_dir);
 
     paths::ensure_job_layout(job_dir)?;
     logs::clear_log(job_dir, "summarize")?;
-    let redacted_prompt = logs::redact_secrets(&user_prompt, &secret_values);
-    let safe_prompt = logs::truncate_for_log(&redacted_prompt, 2_000);
-    logs::append_log(
-        job_dir,
-        "summarize",
-        &format!(
-            "provider: {}\nprotocol: {}\nmodel: {}\nbase_url: {}\nprompt_preview:\n{}\n",
-            provider.id, provider.protocol, model_name, provider.base_url, safe_prompt
-        ),
-    )?;
-
     let client = build_client(config.proxy_url.as_deref())?;
-    let raw_summary = match provider.protocol.as_str() {
-        "openai" => call_openai(
-            &client,
-            provider,
-            &model_name,
-            &api_key,
-            &secret_values,
-            &template.system_prompt,
-            &user_prompt,
-        )?,
-        "anthropic" => call_anthropic(
-            &client,
-            provider,
-            &model_name,
-            &api_key,
-            &secret_values,
-            &template.system_prompt,
-            &user_prompt,
-        )?,
-        protocol => {
-            return Err(AppError::message(format!(
-                "不支持的 Provider 协议: {protocol}"
-            )))
-        }
-    };
-    // Models often wrap the entire Markdown answer in a ```markdown fence.
-    // Unwrap so the UI renders headings/lists instead of raw source.
-    let summary = unwrap_outer_markdown_fence(&raw_summary);
-
     let summary_dir = paths::summary_dir(job_dir);
     fs::create_dir_all(&summary_dir)?;
-    fs::write(summary_dir.join("summary.md"), &summary)?;
+    let by_template_dir = paths::summary_by_template_dir(job_dir);
+    if template_ids.len() > 1 {
+        fs::create_dir_all(&by_template_dir)?;
+    }
+
+    let mut primary_summary = String::new();
+    let mut template_results: Vec<Value> = Vec::new();
+    let mut first_error: Option<String> = None;
+    let mut success_count = 0usize;
+
+    for (index, template_id) in template_ids.iter().enumerate() {
+        let template = config
+            .templates
+            .iter()
+            .find(|entry| &entry.id == template_id)
+            .ok_or_else(|| AppError::message(format!("总结模板不存在: {template_id}")))?;
+
+        let user_prompt = render_template(
+            &template.user_template,
+            &job.display_title(),
+            job.source.url.as_deref().unwrap_or("本地文件"),
+            job.duration_label.as_deref().unwrap_or("未知"),
+            &transcript,
+            &chapters_text,
+        );
+        let redacted_prompt = logs::redact_secrets(&user_prompt, &secret_values);
+        let safe_prompt = logs::truncate_for_log(&redacted_prompt, 2_000);
+        logs::append_log(
+            job_dir,
+            "summarize",
+            &format!(
+                "=== template {} ({}/{}) ===\nprovider: {}\nprotocol: {}\nmodel: {}\nbase_url: {}\nprompt_preview:\n{}\n",
+                template.id,
+                index + 1,
+                template_ids.len(),
+                provider.id,
+                provider.protocol,
+                model_name,
+                provider.base_url,
+                safe_prompt
+            ),
+        )?;
+
+        let call_result = match provider.protocol.as_str() {
+            "openai" => call_openai(
+                &client,
+                provider,
+                &model_name,
+                &api_key,
+                &secret_values,
+                &template.system_prompt,
+                &user_prompt,
+            ),
+            "anthropic" => call_anthropic(
+                &client,
+                provider,
+                &model_name,
+                &api_key,
+                &secret_values,
+                &template.system_prompt,
+                &user_prompt,
+            ),
+            protocol => Err(AppError::message(format!(
+                "不支持的 Provider 协议: {protocol}"
+            ))),
+        };
+
+        match call_result {
+            Ok(raw_summary) => {
+                let summary = unwrap_outer_markdown_fence(&raw_summary);
+                let relative_path = if index == 0 {
+                    fs::write(summary_dir.join("summary.md"), &summary)?;
+                    "summary/summary.md".to_string()
+                } else {
+                    let file_name = sanitize_template_file_name(&template.id);
+                    fs::write(by_template_dir.join(format!("{file_name}.md")), &summary)?;
+                    format!("summary/by_template/{file_name}.md")
+                };
+                if index == 0 {
+                    primary_summary = summary;
+                }
+                success_count += 1;
+                template_results.push(json!({
+                    "template_id": template.id,
+                    "status": "succeeded",
+                    "path": relative_path,
+                    "primary": index == 0,
+                }));
+                logs::append_log(
+                    job_dir,
+                    "summarize",
+                    &format!("template {} saved: {relative_path}", template.id),
+                )?;
+            }
+            Err(error) => {
+                let detail = error.to_string();
+                logs::append_log(
+                    job_dir,
+                    "summarize",
+                    &format!("template {} failed: {detail}", template.id),
+                )?;
+                template_results.push(json!({
+                    "template_id": template.id,
+                    "status": "failed",
+                    "error": detail,
+                    "primary": index == 0,
+                }));
+                if first_error.is_none() {
+                    first_error = Some(detail);
+                }
+            }
+        }
+    }
+
     fs::write(
         summary_dir.join("meta.json"),
         serde_json::to_string_pretty(&json!({
             "provider_profile_id": provider.id,
-            "template_id": template.id,
+            "template_id": template_ids.first(),
+            "template_ids": template_ids,
+            "templates": template_results,
             "model": model_name,
             "protocol": provider.protocol,
             "created_at": chrono::Utc::now(),
             "input_characters": character_count,
             "selected_segment_ids": job.selected_segment_ids,
+            "succeeded": success_count,
+            "requested": template_ids.len(),
         }))?,
     )?;
-    logs::append_log(job_dir, "summarize", "summary saved: summary/summary.md")?;
+
+    if success_count == 0 {
+        return Err(AppError::message(
+            first_error.unwrap_or_else(|| "所有总结模板均失败".to_string()),
+        ));
+    }
+
     job.summary_path = Some("summary/summary.md".to_string());
-    Ok(summary)
+    if let Some(error_detail) = first_error {
+        // Partial success: keep artifacts, surface a soft warning via log only.
+        logs::append_log(
+            job_dir,
+            "summarize",
+            &format!(
+                "partial success: {success_count}/{} templates; first error: {error_detail}",
+                template_ids.len()
+            ),
+        )?;
+    }
+    Ok(primary_summary)
+}
+
+fn sanitize_template_file_name(template_id: &str) -> String {
+    let sanitized: String = template_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "template".to_string()
+    } else {
+        sanitized
+    }
 }
 
 pub fn test_provider(config: &AppConfig, provider_id: &str) -> AppResult<String> {
@@ -144,12 +257,14 @@ pub fn render_template(
     source_url: &str,
     duration: &str,
     transcript: &str,
+    chapters: &str,
 ) -> String {
     template
         .replace("{{title}}", title)
         .replace("{{source_url}}", source_url)
         .replace("{{duration}}", duration)
         .replace("{{transcript}}", transcript)
+        .replace("{{chapters}}", chapters)
 }
 
 /// Strip a single outer fenced code block when the model wraps the whole answer.
@@ -222,20 +337,6 @@ fn resolve_model(job: &Job, provider: &ProviderProfile) -> AppResult<String> {
         )));
     }
     Ok(default_model.to_string())
-}
-
-fn resolve_template<'a>(job: &Job, config: &'a AppConfig) -> AppResult<&'a SummaryTemplate> {
-    let template_id = job
-        .pipeline
-        .template_id
-        .as_ref()
-        .or(config.default_template_id.as_ref())
-        .ok_or_else(|| AppError::message("未选择总结模板"))?;
-    config
-        .templates
-        .iter()
-        .find(|template| &template.id == template_id)
-        .ok_or_else(|| AppError::message(format!("总结模板不存在: {template_id}")))
 }
 
 fn build_client(proxy_url: Option<&str>) -> AppResult<Client> {
@@ -411,13 +512,14 @@ mod tests {
     #[test]
     fn renders_all_supported_variables() {
         let rendered = render_template(
-            "{{title}}|{{source_url}}|{{duration}}|{{transcript}}",
+            "{{title}}|{{source_url}}|{{duration}}|{{transcript}}|{{chapters}}",
             "A",
             "B",
             "C",
             "D",
+            "E",
         );
-        assert_eq!(rendered, "A|B|C|D");
+        assert_eq!(rendered, "A|B|C|D|E");
     }
 
     #[test]

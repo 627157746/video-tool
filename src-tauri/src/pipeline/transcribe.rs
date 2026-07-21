@@ -25,13 +25,13 @@ pub fn transcribe_media_segments(
         .as_deref()
         .ok_or_else(|| AppError::message("本地转写需要 ffmpeg 提取 16kHz 单声道音频"))?;
     let model_path = config
-        .transcribe_model
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
+        .resolve_transcribe_model_path()
         .ok_or_else(|| AppError::message("未配置 whisper.cpp 模型文件路径"))?;
-    if !Path::new(model_path).exists() {
+    if !Path::new(&model_path).exists() {
         return Err(AppError::message(format!("转写模型不存在: {model_path}")));
     }
+    let whisper_prompt = super::glossary::build_whisper_prompt(&config.glossary);
+    job.glossary_hash = Some(super::glossary::glossary_content_hash(&config.glossary));
 
     paths::ensure_job_layout(job_dir)?;
     if target_segment_id.is_some() {
@@ -94,6 +94,12 @@ pub fn transcribe_media_segments(
         let segment_name = format!("segment_{:03}", index + 1);
         let output_base = paths::transcript_segments_dir(job_dir).join(&segment_name);
         let wav_path = output_base.with_extension("wav");
+        let plain_output_path = output_base.with_extension("txt");
+        // Keep previous plain text for single-segment quality comparison (v0.2 P2).
+        if plain_output_path.exists() {
+            let previous_path = output_base.with_extension("prev.txt");
+            let _ = fs::copy(&plain_output_path, &previous_path);
+        }
         logs::append_log(
             job_dir,
             "transcribe",
@@ -105,7 +111,7 @@ pub fn transcribe_media_segments(
             let mut command = Command::new(transcribe_path);
             command.args([
                 "-m",
-                model_path,
+                &model_path,
                 "-f",
                 &wav_path.to_string_lossy(),
                 "-otxt",
@@ -127,6 +133,9 @@ pub fn transcribe_media_segments(
                 .unwrap_or(config.transcribe_language.trim());
             if effective_language != "auto" && !effective_language.is_empty() {
                 command.args(["-l", effective_language]);
+            }
+            if let Some(prompt_text) = whisper_prompt.as_deref() {
+                command.args(["--prompt", prompt_text]);
             }
             let output = command.output().map_err(|error| {
                 AppError::message(format!(
@@ -189,6 +198,7 @@ pub fn transcribe_media_segments(
 pub fn merge_transcripts(
     job_dir: &Path,
     job: &mut Job,
+    config: &AppConfig,
     ffprobe_path: Option<&str>,
 ) -> AppResult<String> {
     let mut segments = job.transcript_segments.clone();
@@ -258,7 +268,16 @@ pub fn merge_transcripts(
             "没有可合并的成功转写分段，请检查选段范围",
         ));
     }
-    let merged = merged_parts.join("\n\n");
+    let merged_raw = merged_parts.join("\n\n");
+    let merged = super::glossary::apply_post_replace(&merged_raw, &config.glossary);
+    if merged != merged_raw {
+        logs::append_log(
+            job_dir,
+            "merge_transcript",
+            "applied glossary post-replace on merged plain text",
+        )?;
+    }
+    job.glossary_hash = Some(super::glossary::glossary_content_hash(&config.glossary));
     let transcript_dir = paths::transcript_dir(job_dir);
     fs::create_dir_all(&transcript_dir)?;
     fs::write(transcript_dir.join("plain.txt"), &merged)?;
@@ -455,6 +474,9 @@ mod tests {
                 title: None,
                 local_path: Some("x".into()),
                 segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
             },
             PipelineOptions::default(),
         );
@@ -480,7 +502,7 @@ mod tests {
         ];
         job.selected_segment_ids = vec!["seg-001".into(), "seg-002".into()];
         assert_eq!(
-            merge_transcripts(&root, &mut job, None).unwrap(),
+            merge_transcripts(&root, &mut job, &AppConfig::default(), None).unwrap(),
             "first\n\nsecond"
         );
         let _ = fs::remove_dir_all(root);
@@ -500,6 +522,9 @@ mod tests {
                 title: None,
                 local_path: Some("video.mp4".into()),
                 segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
             },
             PipelineOptions::default(),
         );
@@ -514,7 +539,7 @@ mod tests {
         }];
         job.selected_segment_ids = vec!["seg-001".into()];
 
-        let error = merge_transcripts(&root, &mut job, None)
+        let error = merge_transcripts(&root, &mut job, &AppConfig::default(), None)
             .expect_err("failed selected segment must block merge");
         assert!(error.to_string().contains("尚未成功"));
 

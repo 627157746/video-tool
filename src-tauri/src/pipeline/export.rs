@@ -129,6 +129,9 @@ mod tests {
                 title: None,
                 local_path: None,
                 segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
             },
             PipelineOptions::default(),
         );
@@ -181,6 +184,9 @@ mod tests {
                 title: None,
                 local_path: Some("video.mp4".into()),
                 segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
             },
             PipelineOptions::default(),
         );

@@ -14,6 +14,8 @@ pub enum JobKind {
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
     Pending,
+    /// Accepted by the global scheduler but not yet running (in-memory FIFO).
+    Queued,
     Running,
     Succeeded,
     Failed,
@@ -36,6 +38,8 @@ pub enum JobStep {
     Ingest,
     Transcribe,
     MergeTranscript,
+    /// Heuristic / outline chapters after merge (v0.2 P2).
+    Chapterize,
     Summarize,
 }
 
@@ -53,13 +57,23 @@ pub enum SegmentStatus {
 pub struct PipelineOptions {
     pub auto_transcribe: bool,
     pub auto_summarize: bool,
+    /// When true, run Chapterize after merge (typically before summarize).
+    /// Omitted on older jobs → false unless auto_summarize implies it at create.
+    #[serde(default)]
+    pub auto_chapterize: bool,
     /// Job-level Provider override. `None` means use
     /// `AppConfig.default_provider_profile_id` **at summarize run time**
     /// (not a snapshot taken at job creation).
     pub provider_profile_id: Option<String>,
-    /// Job-level template override. `None` means use
-    /// `AppConfig.default_template_id` at summarize run time.
+    /// Job-level primary template override. `None` means use
+    /// `AppConfig.default_template_id` at summarize run time (when
+    /// `template_ids` is also empty).
     pub template_id: Option<String>,
+    /// Ordered multi-template list for one Summarize run (v0.2 P3).
+    /// When non-empty, overrides single `template_id` for resolution order;
+    /// first entry is the primary summary (`summary/summary.md`).
+    #[serde(default)]
+    pub template_ids: Vec<String>,
     /// Override the selected provider's `default_model` for this job.
     /// `None` / empty means use the provider default at summarize run time.
     #[serde(default)]
@@ -77,11 +91,55 @@ impl Default for PipelineOptions {
         Self {
             auto_transcribe: true,
             auto_summarize: false,
+            auto_chapterize: false,
             provider_profile_id: None,
             template_id: None,
+            template_ids: Vec::new(),
             model: None,
             transcribe_language: None,
         }
+    }
+}
+
+impl PipelineOptions {
+    /// Effective ordered template ids for summarize (deduped, non-empty entries).
+    pub fn effective_template_ids(
+        &self,
+        default_template_id: Option<&str>,
+        available_template_ids: &[String],
+    ) -> Vec<String> {
+        let mut ordered: Vec<String> = if !self.template_ids.is_empty() {
+            self.template_ids
+                .iter()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+                .collect()
+        } else if let Some(single) = self
+            .template_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            vec![single.to_string()]
+        } else if let Some(default_id) = default_template_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            vec![default_id.to_string()]
+        } else if let Some(first) = available_template_ids
+            .iter()
+            .map(|value| value.trim())
+            .find(|value| !value.is_empty())
+        {
+            vec![first.to_string()]
+        } else {
+            Vec::new()
+        };
+
+        let mut seen = std::collections::HashSet::new();
+        ordered.retain(|id| seen.insert(id.clone()));
+        ordered
     }
 }
 
@@ -92,6 +150,17 @@ pub struct JobSource {
     pub title: Option<String>,
     pub local_path: Option<String>,
     pub segment_minutes: Option<u32>,
+    /// Download auth override for yt-dlp. `None` / `"inherit"` follows global config.
+    /// `"none"` disables cookies for this job. `"file"` / `"browser"` use the fields below.
+    /// Never stores cookie file contents — only path or browser name.
+    #[serde(default)]
+    pub download_cookies_mode: Option<String>,
+    /// Netscape cookies.txt path when mode is `file` (or explicit job path override).
+    #[serde(default)]
+    pub download_cookies_file: Option<String>,
+    /// Browser id for yt-dlp `--cookies-from-browser` when mode is `browser`.
+    #[serde(default)]
+    pub download_cookies_from_browser: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +198,10 @@ pub struct Job {
     /// Omitted on older `source.json` files (Serde default).
     #[serde(default)]
     pub group: Option<String>,
+    /// Optional batch identifier shared by Jobs created together (multi-URL).
+    /// Omitted on older `source.json` files.
+    #[serde(default)]
+    pub batch_id: Option<String>,
     pub current_step: Option<JobStep>,
     pub step_statuses: Vec<StepProgress>,
     #[serde(default)]
@@ -151,11 +224,21 @@ pub struct Job {
     pub summary_path: Option<String>,
     #[serde(default)]
     pub plain_transcript_path: Option<String>,
+    /// Relative path to `transcript/chapters.json` when Chapterize succeeded.
+    #[serde(default)]
+    pub chapters_path: Option<String>,
+    /// Hash of glossary used for the last transcribe/merge (reproducibility).
+    #[serde(default)]
+    pub glossary_hash: Option<String>,
     #[serde(default)]
     pub stop_requested: bool,
     #[serde(default)]
     pub live_capture_active: bool,
     pub error_message: Option<String>,
+    /// Stable machine-readable failure code for recovery UI.
+    /// Omitted on older `source.json` files.
+    #[serde(default)]
+    pub error_code: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -176,9 +259,16 @@ pub struct JobListItem {
     pub source_reference: String,
     #[serde(default)]
     pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
     pub current_step: Option<JobStep>,
     pub progress: f32,
     pub error_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    /// 1-based position in the in-memory global queue; only set when status is queued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_position: Option<u32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -189,9 +279,47 @@ pub struct CreateDownloadJobRequest {
     pub title: Option<String>,
     #[serde(default)]
     pub group: Option<String>,
+    /// Optional batch id when this job is part of a multi-URL batch.
+    #[serde(default)]
+    pub batch_id: Option<String>,
     pub pipeline: Option<PipelineOptions>,
     #[serde(default)]
     pub auto_start: bool,
+    /// `inherit` (default) | `none` | `file` | `browser`
+    #[serde(default)]
+    pub download_cookies_mode: Option<String>,
+    #[serde(default)]
+    pub download_cookies_file: Option<String>,
+    #[serde(default)]
+    pub download_cookies_from_browser: Option<String>,
+}
+
+/// Multi-line download create: one Job per non-empty entry / URL-like line.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateDownloadJobsBatchRequest {
+    /// Raw multi-line paste. Split on the server into individual URL entries.
+    pub urls_text: String,
+    pub title: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
+    pub pipeline: Option<PipelineOptions>,
+    #[serde(default)]
+    pub auto_start: bool,
+    #[serde(default)]
+    pub download_cookies_mode: Option<String>,
+    #[serde(default)]
+    pub download_cookies_file: Option<String>,
+    #[serde(default)]
+    pub download_cookies_from_browser: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateDownloadJobsBatchResponse {
+    pub batch_id: Option<String>,
+    pub jobs: Vec<Job>,
+    /// Entries that could not be turned into jobs (empty after trim, etc.).
+    #[serde(default)]
+    pub skipped: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,7 +369,11 @@ pub struct SelectSegmentsRequest {
 pub struct UpdateJobPipelineRequest {
     pub job_id: String,
     pub provider_profile_id: Option<String>,
+    /// Primary template when `template_ids` is omitted / empty.
     pub template_id: Option<String>,
+    /// Full ordered multi-template list. When `Some`, replaces `template_ids`.
+    #[serde(default)]
+    pub template_ids: Option<Vec<String>>,
     pub model: Option<String>,
 }
 
@@ -291,8 +423,28 @@ pub struct SaveConfigRequest {
     pub min_free_disk_gb: Option<u32>,
     pub live_reconnect_attempts: Option<u32>,
     pub max_context_chars: Option<usize>,
+    /// Global max concurrent running jobs (queued work waits).
+    #[serde(default)]
+    pub max_concurrent_jobs: Option<u32>,
+    /// Max concurrent live-record slot holders (also counts against global max).
+    #[serde(default)]
+    pub max_live_records: Option<u32>,
+    /// Default Netscape cookies.txt path for yt-dlp downloads.
+    #[serde(default)]
+    pub download_cookies_file: Option<String>,
+    /// Default browser for yt-dlp `--cookies-from-browser` (used when file empty).
+    #[serde(default)]
+    pub download_cookies_from_browser: Option<String>,
     pub transcribe_model: Option<String>,
     pub transcribe_language: Option<String>,
+    #[serde(default)]
+    pub transcribe_model_preset: Option<String>,
+    #[serde(default)]
+    pub transcribe_model_presets: Option<crate::config::TranscribeModelPresets>,
+    #[serde(default)]
+    pub glossary: Option<crate::config::GlossaryConfig>,
+    #[serde(default)]
+    pub default_auto_chapterize: Option<bool>,
     pub sidecar_paths: Option<crate::config::SidecarPaths>,
     pub providers: Option<Vec<crate::config::ProviderProfile>>,
     pub templates: Option<Vec<crate::config::SummaryTemplate>>,
@@ -336,8 +488,33 @@ impl Job {
                     detail: None,
                 });
             }
+            if pipeline.auto_chapterize {
+                step_statuses.push(StepProgress {
+                    step: JobStep::Chapterize,
+                    status: StepStatus::Pending,
+                    detail: None,
+                });
+            }
             step_statuses.push(StepProgress {
                 step: JobStep::Summarize,
+                status: StepStatus::Pending,
+                detail: None,
+            });
+        } else if pipeline.auto_chapterize {
+            if !pipeline.auto_transcribe {
+                step_statuses.push(StepProgress {
+                    step: JobStep::Transcribe,
+                    status: StepStatus::Pending,
+                    detail: None,
+                });
+                step_statuses.push(StepProgress {
+                    step: JobStep::MergeTranscript,
+                    status: StepStatus::Pending,
+                    detail: None,
+                });
+            }
+            step_statuses.push(StepProgress {
+                step: JobStep::Chapterize,
                 status: StepStatus::Pending,
                 detail: None,
             });
@@ -349,6 +526,7 @@ impl Job {
             source,
             pipeline,
             group: None,
+            batch_id: None,
             current_step: Some(JobStep::Ingest),
             step_statuses,
             progress: 0.0,
@@ -361,9 +539,12 @@ impl Job {
             tool_version: None,
             summary_path: None,
             plain_transcript_path: None,
+            chapters_path: None,
+            glossary_hash: None,
             stop_requested: false,
             live_capture_active: false,
             error_message: None,
+            error_code: None,
             created_at: now,
             updated_at: now,
         }
@@ -406,10 +587,16 @@ impl Job {
             JobStep::Ingest => &[
                 JobStep::Transcribe,
                 JobStep::MergeTranscript,
+                JobStep::Chapterize,
                 JobStep::Summarize,
             ],
-            JobStep::Transcribe => &[JobStep::MergeTranscript, JobStep::Summarize],
-            JobStep::MergeTranscript => &[JobStep::Summarize],
+            JobStep::Transcribe => &[
+                JobStep::MergeTranscript,
+                JobStep::Chapterize,
+                JobStep::Summarize,
+            ],
+            JobStep::MergeTranscript => &[JobStep::Chapterize, JobStep::Summarize],
+            JobStep::Chapterize => &[JobStep::Summarize],
             JobStep::Summarize => &[],
         };
 
@@ -433,14 +620,22 @@ impl Job {
                 self.tool_path = None;
                 self.tool_version = None;
                 self.plain_transcript_path = None;
+                self.chapters_path = None;
+                self.glossary_hash = None;
                 self.summary_path = None;
             }
             JobStep::Transcribe => {
                 self.plain_transcript_path = None;
+                self.chapters_path = None;
                 self.summary_path = None;
             }
             JobStep::MergeTranscript => {
                 self.plain_transcript_path = None;
+                self.chapters_path = None;
+                self.summary_path = None;
+            }
+            JobStep::Chapterize => {
+                self.chapters_path = None;
                 self.summary_path = None;
             }
             JobStep::Summarize => {
@@ -485,9 +680,18 @@ impl Job {
 
     pub fn required_steps(&self) -> Vec<JobStep> {
         let mut required_steps = vec![JobStep::Ingest];
-        if self.pipeline.auto_transcribe || self.pipeline.auto_summarize {
+        if self.pipeline.auto_transcribe
+            || self.pipeline.auto_summarize
+            || self.pipeline.auto_chapterize
+        {
             required_steps.push(JobStep::Transcribe);
             required_steps.push(JobStep::MergeTranscript);
+        }
+        if self.pipeline.auto_chapterize || self.pipeline.auto_summarize {
+            // Summarize benefits from chapters when auto_chapterize is on.
+            if self.pipeline.auto_chapterize {
+                required_steps.push(JobStep::Chapterize);
+            }
         }
         if self.pipeline.auto_summarize {
             required_steps.push(JobStep::Summarize);
@@ -541,12 +745,62 @@ impl Job {
                 .map(|value| value.trim())
                 .filter(|value| !value.is_empty())
                 .map(|value| value.to_string()),
+            batch_id: self
+                .batch_id
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string()),
             current_step: self.current_step.clone(),
             progress: self.progress,
             error_message: self.error_message.clone(),
+            error_code: self
+                .error_code
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string()),
+            queue_position: None,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
+    }
+
+    /// Split multi-line paste into download entries.
+    ///
+    /// - If **more than one** line looks like a URL (`http://` / `https://` or
+    ///   a bare host-like path), each non-empty line becomes one entry.
+    /// - Otherwise the entire trimmed paste is a single entry (preserves Douyin
+    ///   multi-line share text with one short link).
+    pub fn split_download_url_entries(urls_text: &str) -> Vec<String> {
+        let trimmed_all = urls_text.trim();
+        if trimmed_all.is_empty() {
+            return Vec::new();
+        }
+
+        let lines: Vec<String> = urls_text
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+        if lines.is_empty() {
+            return Vec::new();
+        }
+
+        let url_like_count = lines
+            .iter()
+            .filter(|line| line_looks_like_url(line))
+            .count();
+        if url_like_count > 1 {
+            // Prefer URL-like lines when the paste mixes commentary + links.
+            let url_lines: Vec<String> = lines
+                .into_iter()
+                .filter(|line| line_looks_like_url(line))
+                .collect();
+            return url_lines;
+        }
+
+        vec![trimmed_all.to_string()]
     }
 
     pub fn rebuild_media_segments_from_files(&mut self) {
@@ -587,6 +841,24 @@ impl Job {
     }
 }
 
+fn line_looks_like_url(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return true;
+    }
+    // Bare short hosts often appear without scheme in share dumps.
+    if lower.contains("v.douyin.com/")
+        || lower.contains("www.douyin.com/")
+        || lower.contains("www.bilibili.com/")
+        || lower.contains("b23.tv/")
+        || lower.contains("youtu.be/")
+        || lower.contains("youtube.com/")
+    {
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,12 +872,17 @@ mod tests {
                 title: Some("t".into()),
                 local_path: None,
                 segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
             },
             PipelineOptions {
                 auto_transcribe: true,
                 auto_summarize: true,
+                auto_chapterize: false,
                 provider_profile_id: None,
                 template_id: None,
+                template_ids: Vec::new(),
                 model: None,
                 transcribe_language: None,
             },
@@ -624,6 +901,9 @@ mod tests {
                 title: Some("legacy".into()),
                 local_path: None,
                 segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
             },
             PipelineOptions::default(),
         );
@@ -642,12 +922,57 @@ mod tests {
                 title: Some("t".into()),
                 local_path: None,
                 segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
             },
             PipelineOptions::default(),
         );
         job.group = Some("  学习笔记  ".into());
         let list_item = job.to_list_item();
         assert_eq!(list_item.group.as_deref(), Some("学习笔记"));
+    }
+
+    #[test]
+    fn split_keeps_douyin_share_text_as_single_entry() {
+        let paste = "5.23 abc:/ 复制打开抖音\nhttps://v.douyin.com/abc123/\n# 生活";
+        let entries = Job::split_download_url_entries(paste);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].contains("v.douyin.com"));
+    }
+
+    #[test]
+    fn split_multi_url_lines_into_batch_entries() {
+        let paste = "https://example.com/a\nhttps://example.com/b\n\nhttps://example.com/c\n";
+        let entries = Job::split_download_url_entries(paste);
+        assert_eq!(
+            entries,
+            vec![
+                "https://example.com/a".to_string(),
+                "https://example.com/b".to_string(),
+                "https://example.com/c".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_item_includes_batch_id() {
+        let mut job = Job::new(
+            JobSource {
+                kind: JobKind::Download,
+                url: Some("https://example.com".into()),
+                title: Some("t".into()),
+                local_path: None,
+                segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
+            },
+            PipelineOptions::default(),
+        );
+        job.batch_id = Some("  batch-1  ".into());
+        let list_item = job.to_list_item();
+        assert_eq!(list_item.batch_id.as_deref(), Some("batch-1"));
     }
 
     #[test]
@@ -659,12 +984,17 @@ mod tests {
                 title: None,
                 local_path: None,
                 segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
             },
             PipelineOptions {
                 auto_transcribe: true,
                 auto_summarize: true,
+                auto_chapterize: false,
                 provider_profile_id: None,
                 template_id: None,
+                template_ids: Vec::new(),
                 model: None,
                 transcribe_language: None,
             },
@@ -695,12 +1025,17 @@ mod tests {
                 title: None,
                 local_path: Some("video.mp4".into()),
                 segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
             },
             PipelineOptions {
                 auto_transcribe: true,
                 auto_summarize: true,
+                auto_chapterize: false,
                 provider_profile_id: None,
                 template_id: None,
+                template_ids: Vec::new(),
                 model: None,
                 transcribe_language: None,
             },
@@ -750,12 +1085,17 @@ mod tests {
                 title: None,
                 local_path: None,
                 segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
             },
             PipelineOptions {
                 auto_transcribe: true,
                 auto_summarize: false,
+                auto_chapterize: false,
                 provider_profile_id: None,
                 template_id: None,
+                template_ids: Vec::new(),
                 model: None,
                 transcribe_language: None,
             },
@@ -765,5 +1105,34 @@ mod tests {
         job.step_statuses[0].status = StepStatus::Succeeded;
 
         assert_eq!(job.derived_status(), JobStatus::Pending);
+    }
+
+    #[test]
+    fn effective_template_ids_prefers_list_then_single_then_default() {
+        let available = vec!["a".into(), "b".into(), "c".into()];
+        let with_list = PipelineOptions {
+            template_ids: vec!["b".into(), "a".into(), "b".into()],
+            template_id: Some("c".into()),
+            ..PipelineOptions::default()
+        };
+        assert_eq!(
+            with_list.effective_template_ids(Some("a"), &available),
+            vec!["b".to_string(), "a".to_string()]
+        );
+
+        let with_single = PipelineOptions {
+            template_id: Some("c".into()),
+            ..PipelineOptions::default()
+        };
+        assert_eq!(
+            with_single.effective_template_ids(Some("a"), &available),
+            vec!["c".to_string()]
+        );
+
+        let with_default = PipelineOptions::default();
+        assert_eq!(
+            with_default.effective_template_ids(Some("a"), &available),
+            vec!["a".to_string()]
+        );
     }
 }

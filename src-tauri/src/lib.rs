@@ -1,8 +1,10 @@
 mod commands;
 mod config;
+mod distribution;
 mod error;
 mod models;
 mod pipeline;
+mod search;
 mod sidecar;
 mod storage;
 mod workspace;
@@ -85,6 +87,7 @@ pub fn run() {
             commands::get_job,
             commands::delete_job,
             commands::create_download_job,
+            commands::create_download_jobs_batch,
             commands::create_live_record_job,
             commands::create_import_job,
             commands::run_job,
@@ -99,10 +102,24 @@ pub fn run() {
             commands::test_provider,
             commands::get_job_transcript,
             commands::get_job_summary,
+            commands::get_job_summaries,
+            commands::get_job_chapters,
+            commands::get_transcript_segment_texts,
+            commands::search_workspace,
+            commands::rebuild_search_index,
             commands::get_job_log,
             commands::open_job_directory,
             commands::probe_sidecars,
+            commands::get_dependency_report,
+            commands::list_transcribe_models,
+            commands::open_transcribe_model_directory,
+            commands::export_app_config,
+            commands::import_app_config,
+            commands::check_app_update,
+            commands::get_system_diagnostics,
             commands::check_yt_dlp_update,
+            commands::inspect_workspace_health,
+            commands::repair_workspace_health,
         ])
         .setup(|app| {
             let bundled_sidecar_root = app

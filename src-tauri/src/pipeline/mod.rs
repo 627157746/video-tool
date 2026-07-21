@@ -1,6 +1,9 @@
+pub mod chapterize;
 pub mod douyin;
 pub mod download;
+pub mod error_code;
 pub mod export;
+pub mod glossary;
 pub mod logs;
 pub mod paths;
 pub mod record;

@@ -11,6 +11,7 @@ import type {
   UpdateJobGroupRequest,
   UpdateJobPipelineRequest,
   UpdateJobTitleRequest,
+  WorkspaceHealthReport,
 } from "./types";
 
 export async function getAppInfo(): Promise<AppInfo> {
@@ -47,10 +48,32 @@ export async function createDownloadJob(input: {
   url: string;
   title?: string;
   group?: string | null;
+  batch_id?: string | null;
   pipeline?: PipelineOptions;
   auto_start?: boolean;
 }): Promise<Job> {
   return invoke<Job>("create_download_job", { request: input });
+}
+
+export interface CreateDownloadJobsBatchResult {
+  batch_id?: string | null;
+  jobs: Job[];
+  skipped: string[];
+}
+
+export async function createDownloadJobsBatch(input: {
+  urls_text: string;
+  title?: string;
+  group?: string | null;
+  pipeline?: PipelineOptions;
+  auto_start?: boolean;
+  download_cookies_mode?: string | null;
+  download_cookies_file?: string | null;
+  download_cookies_from_browser?: string | null;
+}): Promise<CreateDownloadJobsBatchResult> {
+  return invoke<CreateDownloadJobsBatchResult>("create_download_jobs_batch", {
+    request: input,
+  });
 }
 
 export async function createLiveRecordJob(input: {
@@ -171,4 +194,104 @@ export async function getJobTranscript(jobId: string): Promise<string> {
 
 export async function getJobSummary(jobId: string): Promise<string> {
   return invoke<string>("get_job_summary", { jobId });
+}
+
+export async function getJobSummaries(
+  jobId: string,
+): Promise<
+  Array<{
+    template_id: string;
+    path: string;
+    content: string;
+    primary: boolean;
+  }>
+> {
+  return invoke("get_job_summaries", { jobId });
+}
+
+export async function searchWorkspace(
+  query: string,
+  limit?: number,
+): Promise<
+  Array<{
+    job_id: string;
+    title: string;
+    kind: string;
+    field: string;
+    snippet: string;
+    path: string;
+  }>
+> {
+  return invoke("search_workspace", { query, limit: limit ?? 30 });
+}
+
+export async function rebuildSearchIndex(): Promise<number> {
+  return invoke<number>("rebuild_search_index");
+}
+
+export async function getJobChapters(jobId: string): Promise<string> {
+  return invoke<string>("get_job_chapters", { jobId });
+}
+
+export async function getTranscriptSegmentTexts(
+  jobId: string,
+  segmentId: string,
+): Promise<{
+  segment_id: string;
+  current: string;
+  previous?: string | null;
+}> {
+  return invoke("get_transcript_segment_texts", { jobId, segmentId });
+}
+
+export async function inspectWorkspaceHealth(): Promise<WorkspaceHealthReport> {
+  return invoke<WorkspaceHealthReport>("inspect_workspace_health");
+}
+
+export async function repairWorkspaceHealth(): Promise<WorkspaceHealthReport> {
+  return invoke<WorkspaceHealthReport>("repair_workspace_health");
+}
+
+export async function getDependencyReport(): Promise<
+  import("./types").DependencyReport
+> {
+  return invoke("get_dependency_report");
+}
+
+export async function listTranscribeModels(): Promise<
+  import("./types").ModelInventory
+> {
+  return invoke("list_transcribe_models");
+}
+
+export async function openTranscribeModelDirectory(): Promise<string> {
+  return invoke<string>("open_transcribe_model_directory");
+}
+
+export async function exportAppConfig(
+  includeSecrets = false,
+): Promise<import("./types").ConfigExportPackage> {
+  return invoke("export_app_config", { includeSecrets });
+}
+
+export async function importAppConfig(
+  packagePayload: import("./types").ConfigExportPackage,
+  importSecrets = false,
+): Promise<import("./types").ConfigImportResult> {
+  return invoke("import_app_config", {
+    package: packagePayload,
+    importSecrets,
+  });
+}
+
+export async function checkAppUpdate(): Promise<
+  import("./types").UpdateCheckResult
+> {
+  return invoke("check_app_update");
+}
+
+export async function getSystemDiagnostics(): Promise<
+  import("./types").SystemDiagnostics
+> {
+  return invoke("get_system_diagnostics");
 }

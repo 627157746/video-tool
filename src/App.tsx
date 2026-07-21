@@ -4,24 +4,38 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
+  checkAppUpdate,
   checkYtDlpUpdate,
-  createDownloadJob,
+  createDownloadJobsBatch,
   createImportJob,
   createLiveRecordJob,
   deleteJob,
+  exportAppConfig,
   exportJob,
   getAppInfo,
   getConfig,
+  getDependencyReport,
   getJob,
   getJobLog,
+  getJobChapters,
+  getJobSummaries,
   getJobSummary,
   getJobTranscript,
+  getSystemDiagnostics,
+  getTranscriptSegmentTexts,
+  importAppConfig,
+  inspectWorkspaceHealth,
   listJobs,
+  listTranscribeModels,
   openJobDirectory,
+  openTranscribeModelDirectory,
   probeSidecars,
+  rebuildSearchIndex,
+  repairWorkspaceHealth,
   runJob,
   retryTranscriptSegment,
   saveConfig,
+  searchWorkspace,
   selectJobSegments,
   stopRecording,
   testProvider,
@@ -32,16 +46,23 @@ import {
 import type {
   AppConfigPublic,
   AppInfo,
+  ConfigExportPackage,
+  DependencyReport,
+  GlossaryConfig,
   Job,
   JobGroupDefinition,
-  JobKind,
   JobListItem,
-  JobStatus,
   JobStep,
+  ModelInventory,
   ProviderProfileInput,
+  SearchHit,
   SidecarStatus,
-  StepStatus,
   SummaryTemplate,
+  SummaryTemplateArtifact,
+  SystemDiagnostics,
+  TranscribeModelPresets,
+  UpdateCheckResult,
+  WorkspaceHealthReport,
 } from "./types";
 import {
   ACCENT_COLOR_OPTIONS,
@@ -55,151 +76,53 @@ import {
   type ThemeMode,
   type ThemePreferences,
 } from "./theme";
+import {
+  COOKIES_BROWSER_OPTIONS,
+  JOB_DETAIL_SECTIONS,
+  LOG_NAMES,
+  SETTINGS_SECTIONS,
+  TRANSCRIBE_LANGUAGE_OPTIONS,
+  type CreateMode,
+  type JobDetailSection,
+  type LogName,
+  type MainView,
+  type SettingsPathPickerId,
+  type SettingsSection,
+} from "./constants";
+import {
+  buildRecoverySuggestion,
+  type RecoveryAction,
+  type RecoverySuggestion,
+} from "./recoveryUtils";
+import {
+  formatProgress,
+  formatQueueStatusLabel,
+  formatTime,
+  getStepActionLabel,
+  KIND_LABEL,
+  PIPELINE_STEPS,
+  STATUS_LABEL,
+  STEP_LABEL,
+  STEP_STATUS_LABEL,
+} from "./labels";
+import {
+  createClientGroupId,
+  getPipelineStepProgress,
+  jobToListItem,
+  mergeJobListSnapshots,
+  normalizeJobGroup,
+  normalizeProviderModels,
+  parseProviderModelsListText,
+  providerModelsListText,
+  resolveExistingDefaultId,
+  resolveJobGroupFilterKey,
+  resolveJobGroupLabel,
+  resolveJobGroupSelectValue,
+  resolveProviderModelOptions,
+  unwrapOuterMarkdownFence,
+} from "./jobUtils";
+import { PathPickerField } from "./components/PathPickerField";
 import "./App.css";
-
-type CreateMode = "download" | "live" | "import" | null;
-type MainView = "jobs" | "settings";
-type SettingsSection =
-  | "appearance"
-  | "pipeline"
-  | "providers"
-  | "templates"
-  | "groups"
-  | "sidecars";
-type JobDetailSection =
-  | "overview"
-  | "pipeline"
-  | "summarize"
-  | "segments"
-  | "logs"
-  | "summary"
-  | "transcript";
-type SettingsPathPickerId =
-  | "workspace"
-  | "transcribe-model"
-  | "yt-dlp"
-  | "ffmpeg"
-  | "ffprobe"
-  | "streamlink"
-  | "transcribe";
-type LogName =
-  | "download"
-  | "record"
-  | "transcribe"
-  | "merge_transcript"
-  | "summarize";
-
-const SETTINGS_SECTIONS: ReadonlyArray<{
-  id: SettingsSection;
-  label: string;
-  description: string;
-}> = [
-  {
-    id: "appearance",
-    label: "外观与主题",
-    description: "深浅色模式与强调色，仅影响本机界面。",
-  },
-  {
-    id: "pipeline",
-    label: "工作区与流水线",
-    description: "工作区、默认 Provider/模板、转写与磁盘保护等全局默认。",
-  },
-  {
-    id: "providers",
-    label: "Provider 档案",
-    description: "管理 AI 接口档案；左侧列表选择，右侧编辑详情。",
-  },
-  {
-    id: "templates",
-    label: "总结模板",
-    description: "管理总结提示词模板；左侧列表选择，右侧编辑内容。",
-  },
-  {
-    id: "groups",
-    label: "任务分组",
-    description: "维护分组目录：新增、重命名、排序、删除；任务挂接分组 ID。",
-  },
-  {
-    id: "sidecars",
-    label: "Sidecar 工具",
-    description: "可选覆盖可执行路径，并查看当前解析结果。解析顺序：内置 → 配置路径 → PATH。",
-  },
-];
-
-const JOB_DETAIL_SECTIONS: ReadonlyArray<{
-  id: JobDetailSection;
-  label: string;
-  description: string;
-}> = [
-  {
-    id: "overview",
-    label: "来源概览",
-    description: "任务来源、进度、媒体文件与所用工具。",
-  },
-  {
-    id: "pipeline",
-    label: "流水线",
-    description: "查看各步骤状态，按步骤重试或继续运行。",
-  },
-  {
-    id: "summarize",
-    label: "总结配置",
-    description: "为本任务指定 Provider、模型与总结模板；空值跟随全局默认。",
-  },
-  {
-    id: "segments",
-    label: "总结选段",
-    description: "勾选参与合并与总结的转写分段；改选后需重跑合并与总结。",
-  },
-  {
-    id: "logs",
-    label: "日志",
-    description: "按阶段查看下载、录制、转写、合并与总结日志。",
-  },
-  {
-    id: "summary",
-    label: "Markdown 总结",
-    description: "查看本任务生成的 Markdown 总结文档。",
-  },
-  {
-    id: "transcript",
-    label: "合并字幕",
-    description: "查看合并后的字幕/转写原文。",
-  },
-];
-
-/** whisper.cpp `-l` codes; `auto` means omit `-l` and let whisper detect. */
-const TRANSCRIBE_LANGUAGE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: "auto", label: "自动检测" },
-  { value: "zh", label: "中文" },
-  { value: "en", label: "英语" },
-  { value: "ja", label: "日语" },
-  { value: "ko", label: "韩语" },
-  { value: "yue", label: "粤语" },
-  { value: "fr", label: "法语" },
-  { value: "de", label: "德语" },
-  { value: "es", label: "西班牙语" },
-  { value: "ru", label: "俄语" },
-  { value: "pt", label: "葡萄牙语" },
-  { value: "it", label: "意大利语" },
-  { value: "th", label: "泰语" },
-  { value: "vi", label: "越南语" },
-  { value: "id", label: "印尼语" },
-  { value: "ms", label: "马来语" },
-  { value: "ar", label: "阿拉伯语" },
-  { value: "hi", label: "印地语" },
-];
-
-interface PathPickerFieldProps {
-  label: string;
-  value: string;
-  emptyValueLabel: string;
-  selectButtonLabel: string;
-  isSelecting: boolean;
-  isDisabled: boolean;
-  onSelect: () => void;
-  onClear?: () => void;
-}
 
 interface SettingsPathSelectionOptions {
   pickerId: SettingsPathPickerId;
@@ -211,367 +134,6 @@ interface SettingsPathSelectionOptions {
     extensions: string[];
   }>;
   updatePath: (selectedPath: string) => void;
-}
-
-const LOG_NAMES: LogName[] = [
-  "download",
-  "record",
-  "transcribe",
-  "merge_transcript",
-  "summarize",
-];
-
-const KIND_LABEL: Record<JobKind, string> = {
-  download: "链接下载",
-  live_record: "直播录制",
-  import_local: "本地导入",
-};
-
-const STATUS_LABEL: Record<JobStatus, string> = {
-  pending: "等待中",
-  running: "运行中",
-  succeeded: "成功",
-  failed: "失败",
-  cancelled: "已取消",
-};
-
-const STEP_LABEL: Record<JobStep, string> = {
-  ingest: "获取媒体",
-  transcribe: "转写",
-  merge_transcript: "合并字幕",
-  summarize: "AI 总结",
-};
-
-const STEP_STATUS_LABEL: Record<StepStatus, string> = {
-  pending: "等待",
-  running: "进行中",
-  succeeded: "完成",
-  failed: "失败",
-  skipped: "跳过",
-};
-
-const PIPELINE_STEPS: JobStep[] = [
-  "ingest",
-  "transcribe",
-  "merge_transcript",
-  "summarize",
-];
-
-function getPipelineStepProgress(job: Job, step: JobStep) {
-  return (
-    job.step_statuses.find((progress) => progress.step === step) ?? {
-      step,
-      status: "pending" as const,
-      detail: "尚未运行，可随时手动执行",
-    }
-  );
-}
-
-function getStepActionLabel(status: StepStatus): string {
-  if (status === "running") {
-    return "运行中";
-  }
-  if (status === "pending" || status === "skipped") {
-    return "运行";
-  }
-  return "重试";
-}
-
-function formatTime(value: string): string {
-  try {
-    return new Date(value).toLocaleString();
-  } catch {
-    return value;
-  }
-}
-
-function formatProgress(value: number | undefined): string {
-  if (value == null || Number.isNaN(value)) {
-    return "0%";
-  }
-  return `${Math.max(0, Math.min(100, value)).toFixed(0)}%`;
-}
-
-function normalizeJobGroup(group: string | null | undefined): string | null {
-  const trimmedGroup = group?.trim() ?? "";
-  return trimmedGroup ? trimmedGroup : null;
-}
-
-/** Resolve Job.group (id or legacy free-text) to a display name. */
-function resolveJobGroupLabel(
-  groupValue: string | null | undefined,
-  catalog: JobGroupDefinition[],
-): string | null {
-  const trimmedGroupValue = normalizeJobGroup(groupValue);
-  if (!trimmedGroupValue) {
-    return null;
-  }
-  const matchedById = catalog.find(
-    (groupEntry) => groupEntry.id === trimmedGroupValue,
-  );
-  if (matchedById) {
-    return matchedById.name;
-  }
-  const matchedByName = catalog.find(
-    (groupEntry) =>
-      groupEntry.name.trim().toLowerCase() ===
-      trimmedGroupValue.toLowerCase(),
-  );
-  if (matchedByName) {
-    return matchedByName.name;
-  }
-  return trimmedGroupValue;
-}
-
-/**
- * Stable filter key for a job group value.
- * Known catalog entries use `id:<id>`; orphans use `legacy:<name>`.
- */
-function resolveJobGroupFilterKey(
-  groupValue: string | null | undefined,
-  catalog: JobGroupDefinition[],
-): string | null {
-  const trimmedGroupValue = normalizeJobGroup(groupValue);
-  if (!trimmedGroupValue) {
-    return null;
-  }
-  const matchedById = catalog.find(
-    (groupEntry) => groupEntry.id === trimmedGroupValue,
-  );
-  if (matchedById) {
-    return `id:${matchedById.id}`;
-  }
-  const matchedByName = catalog.find(
-    (groupEntry) =>
-      groupEntry.name.trim().toLowerCase() ===
-      trimmedGroupValue.toLowerCase(),
-  );
-  if (matchedByName) {
-    return `id:${matchedByName.id}`;
-  }
-  return `legacy:${trimmedGroupValue.toLowerCase()}`;
-}
-
-/**
- * Value for the job-detail group <select>: catalog id when known,
- * raw legacy string when orphaned, or "" when ungrouped.
- */
-function resolveJobGroupSelectValue(
-  groupValue: string | null | undefined,
-  catalog: JobGroupDefinition[],
-): string {
-  const trimmedGroupValue = normalizeJobGroup(groupValue);
-  if (!trimmedGroupValue) {
-    return "";
-  }
-  const matchedById = catalog.find(
-    (groupEntry) => groupEntry.id === trimmedGroupValue,
-  );
-  if (matchedById) {
-    return matchedById.id;
-  }
-  const matchedByName = catalog.find(
-    (groupEntry) =>
-      groupEntry.name.trim().toLowerCase() ===
-      trimmedGroupValue.toLowerCase(),
-  );
-  if (matchedByName) {
-    return matchedByName.id;
-  }
-  return trimmedGroupValue;
-}
-
-function createClientGroupId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-  return `group-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function jobToListItem(job: Job): JobListItem {
-  return {
-    id: job.id,
-    status: job.status,
-    kind: job.source.kind,
-    title: job.source.title?.trim()
-      ? job.source.title
-      : job.source.url || job.source.local_path || job.id,
-    source_reference: job.source.url || job.source.local_path || "",
-    group: normalizeJobGroup(job.group),
-    current_step: job.current_step,
-    progress: job.progress ?? 0,
-    error_message: job.error_message,
-    created_at: job.created_at,
-    updated_at: job.updated_at,
-  };
-}
-
-function mergeJobListSnapshots(
-  currentJobs: JobListItem[],
-  refreshedJobs: JobListItem[],
-): JobListItem[] {
-  const refreshedJobIds = new Set(refreshedJobs.map((job) => job.id));
-  const currentJobsById = new Map(currentJobs.map((job) => [job.id, job]));
-  const mergedJobs = refreshedJobs.map((refreshedJob) => {
-    const currentJob = currentJobsById.get(refreshedJob.id);
-    if (currentJob && currentJob.updated_at >= refreshedJob.updated_at) {
-      return currentJob;
-    }
-    return refreshedJob;
-  });
-  for (const currentJob of currentJobs) {
-    if (!refreshedJobIds.has(currentJob.id)) {
-      mergedJobs.push(currentJob);
-    }
-  }
-  return mergedJobs.sort((left, right) =>
-    right.created_at.localeCompare(left.created_at),
-  );
-}
-
-function resolveExistingDefaultId(
-  preferredId: string,
-  availableIds: string[],
-): string {
-  const normalizedPreferredId = preferredId.trim();
-  if (availableIds.includes(normalizedPreferredId)) {
-    return normalizedPreferredId;
-  }
-  return availableIds.find((availableId) => availableId.trim())?.trim() ?? "";
-}
-
-/**
- * Models often wrap the entire Markdown answer in a ```markdown fence.
- * Strip only that outer document fence so ReactMarkdown can render headings
- * and lists; nested fenced code blocks inside the body are kept.
- * A missing closing fence is still unwrapped.
- */
-function unwrapOuterMarkdownFence(markdownText: string): string {
-  const trimmedText = markdownText.trim();
-  if (!trimmedText.startsWith("```")) {
-    return trimmedText;
-  }
-
-  const lines = trimmedText.split(/\r?\n/);
-  const openingLine = lines[0]?.trim() ?? "";
-  if (!openingLine.startsWith("```")) {
-    return trimmedText;
-  }
-
-  const languageTag = openingLine.replace(/^`+/, "").trim();
-  if (languageTag && !/^[A-Za-z0-9_-]+$/.test(languageTag)) {
-    return trimmedText;
-  }
-
-  let bodyLines = lines.slice(1);
-  if (bodyLines.length > 0 && bodyLines[bodyLines.length - 1]?.trim() === "```") {
-    bodyLines = bodyLines.slice(0, -1);
-  }
-
-  return bodyLines.join("\n").trim();
-}
-
-/** Dedupe/trim model names and ensure the default model is present. */
-function normalizeProviderModels(
-  models: string[],
-  defaultModel: string,
-): { models: string[]; default_model: string } {
-  const seenModelNames = new Set<string>();
-  const normalizedModels: string[] = [];
-  for (const modelName of models) {
-    const trimmedModelName = modelName.trim();
-    if (!trimmedModelName || seenModelNames.has(trimmedModelName)) {
-      continue;
-    }
-    seenModelNames.add(trimmedModelName);
-    normalizedModels.push(trimmedModelName);
-  }
-  const trimmedDefaultModel = defaultModel.trim();
-  if (trimmedDefaultModel && !seenModelNames.has(trimmedDefaultModel)) {
-    normalizedModels.unshift(trimmedDefaultModel);
-  }
-  const resolvedDefaultModel =
-    trimmedDefaultModel || normalizedModels[0] || "";
-  return {
-    models: normalizedModels.length > 0 ? normalizedModels : [resolvedDefaultModel].filter(Boolean),
-    default_model: resolvedDefaultModel || normalizedModels[0] || "",
-  };
-}
-
-function providerModelsListText(models: string[]): string {
-  return models.join("\n");
-}
-
-function parseProviderModelsListText(text: string): string[] {
-  return text
-    .split(/[\n,]+/)
-    .map((modelName) => modelName.trim())
-    .filter(Boolean);
-}
-
-function resolveProviderModelOptions(
-  provider:
-    | { default_model: string; models?: string[] | null }
-    | undefined,
-): string[] {
-  if (!provider) {
-    return [];
-  }
-  return normalizeProviderModels(
-    provider.models ?? [],
-    provider.default_model,
-  ).models;
-}
-
-function PathPickerField({
-  label,
-  value,
-  emptyValueLabel,
-  selectButtonLabel,
-  isSelecting,
-  isDisabled,
-  onSelect,
-  onClear,
-}: PathPickerFieldProps) {
-  const hasSelectedPath = value.trim().length > 0;
-
-  return (
-    <div className="file-picker-field">
-      <span>{label}</span>
-      <div className="file-picker-row">
-        <button
-          className="btn secondary"
-          type="button"
-          disabled={isDisabled}
-          aria-label={`${selectButtonLabel}：${label}`}
-          onClick={onSelect}
-        >
-          {isSelecting
-            ? "正在选择…"
-            : hasSelectedPath
-              ? "重新选择"
-              : selectButtonLabel}
-        </button>
-        {onClear && (
-          <button
-            className="btn ghost"
-            type="button"
-            disabled={isDisabled || !hasSelectedPath}
-            aria-label={`清空${label}`}
-            onClick={onClear}
-          >
-            清空
-          </button>
-        )}
-        <div
-          className={`file-picker-value${hasSelectedPath ? "" : " muted"}`}
-          title={hasSelectedPath ? value : emptyValueLabel}
-        >
-          {hasSelectedPath ? value : emptyValueLabel}
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function App() {
@@ -586,9 +148,21 @@ function App() {
   const [logText, setLogText] = useState("");
   const [transcriptText, setTranscriptText] = useState("");
   const [summaryText, setSummaryText] = useState("");
+  const [summaryArtifacts, setSummaryArtifacts] = useState<
+    SummaryTemplateArtifact[]
+  >([]);
+  const [activeSummaryTemplateId, setActiveSummaryTemplateId] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  /** Full-text search over transcripts/summaries (workspace FTS). */
+  const [fullTextQuery, setFullTextQuery] = useState("");
+  const [fullTextHits, setFullTextHits] = useState<SearchHit[]>([]);
+  const [isFullTextSearching, setIsFullTextSearching] = useState(false);
+  /** True after the user has run at least one full-text search (for empty-state UI). */
+  const [fullTextHasSearched, setFullTextHasSearched] = useState(false);
   /** `"all"` | `"ungrouped"` | exact group name for filtering the job list. */
   const [groupFilter, setGroupFilter] = useState<string>("all");
+  /** `"all"` | batch UUID for filtering jobs from one multi-URL create. */
+  const [batchFilter, setBatchFilter] = useState<string>("all");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -626,6 +200,7 @@ function App() {
   const [formSegmentMinutes, setFormSegmentMinutes] = useState(30);
   const [autoTranscribe, setAutoTranscribe] = useState(true);
   const [autoSummarize, setAutoSummarize] = useState(false);
+  const [autoChapterize, setAutoChapterize] = useState(false);
   const [autoStart, setAutoStart] = useState(true);
   /** Empty string means follow global default at summarize run time. */
   const [formProviderId, setFormProviderId] = useState("");
@@ -633,10 +208,13 @@ function App() {
   const [formModel, setFormModel] = useState("");
   /** Empty string means follow global default template at summarize run time. */
   const [formTemplateId, setFormTemplateId] = useState("");
+  /** Ordered multi-template ids for create form (v0.2 P3). */
+  const [formTemplateIds, setFormTemplateIds] = useState<string[]>([]);
   const [formTranscribeLanguage, setFormTranscribeLanguage] = useState("auto");
   const [jobProviderId, setJobProviderId] = useState("");
   const [jobModel, setJobModel] = useState("");
   const [jobTemplateId, setJobTemplateId] = useState("");
+  const [jobTemplateIds, setJobTemplateIds] = useState<string[]>([]);
   const [isSavingJobPipeline, setIsSavingJobPipeline] = useState(false);
   const [jobTitleDraft, setJobTitleDraft] = useState("");
   const [isSavingJobTitle, setIsSavingJobTitle] = useState(false);
@@ -653,8 +231,46 @@ function App() {
   const [settingsMinDisk, setSettingsMinDisk] = useState(5);
   const [settingsReconnect, setSettingsReconnect] = useState(3);
   const [settingsMaxContextChars, setSettingsMaxContextChars] = useState(400000);
+  const [settingsMaxConcurrentJobs, setSettingsMaxConcurrentJobs] = useState(2);
+  const [settingsMaxLiveRecords, setSettingsMaxLiveRecords] = useState(1);
+  const [settingsCookiesFile, setSettingsCookiesFile] = useState("");
+  const [settingsCookiesBrowser, setSettingsCookiesBrowser] = useState("");
+  const [formCookiesMode, setFormCookiesMode] = useState("inherit");
+  const [formCookiesFile, setFormCookiesFile] = useState("");
+  const [formCookiesBrowser, setFormCookiesBrowser] = useState("chrome");
+  const [workspaceHealth, setWorkspaceHealth] =
+    useState<WorkspaceHealthReport | null>(null);
+  const [isInspectingHealth, setIsInspectingHealth] = useState(false);
+  const [isRepairingHealth, setIsRepairingHealth] = useState(false);
+  const [dependencyReport, setDependencyReport] =
+    useState<DependencyReport | null>(null);
+  const [modelInventory, setModelInventory] = useState<ModelInventory | null>(
+    null,
+  );
+  const [systemDiagnostics, setSystemDiagnostics] =
+    useState<SystemDiagnostics | null>(null);
+  const [updateCheckResult, setUpdateCheckResult] =
+    useState<UpdateCheckResult | null>(null);
+  const [isLoadingP4Tools, setIsLoadingP4Tools] = useState(false);
   const [settingsTranscribeModel, setSettingsTranscribeModel] = useState("");
   const [settingsTranscribeLanguage, setSettingsTranscribeLanguage] = useState("auto");
+  const [settingsTranscribeModelPreset, setSettingsTranscribeModelPreset] =
+    useState("custom");
+  const [settingsModelPresetSpeed, setSettingsModelPresetSpeed] = useState("");
+  const [settingsModelPresetBalanced, setSettingsModelPresetBalanced] =
+    useState("");
+  const [settingsModelPresetQuality, setSettingsModelPresetQuality] =
+    useState("");
+  const [settingsGlossaryHotwords, setSettingsGlossaryHotwords] = useState("");
+  const [settingsGlossaryReplacements, setSettingsGlossaryReplacements] =
+    useState("");
+  const [settingsGlossaryWhisperPrompt, setSettingsGlossaryWhisperPrompt] =
+    useState(true);
+  const [settingsGlossaryPostReplace, setSettingsGlossaryPostReplace] =
+    useState(true);
+  const [settingsAutoChapterize, setSettingsAutoChapterize] = useState(true);
+  const [chaptersText, setChaptersText] = useState("");
+  const [segmentDiffText, setSegmentDiffText] = useState<string | null>(null);
   const [settingsDefaultProviderId, setSettingsDefaultProviderId] = useState("");
   const [settingsDefaultTemplateId, setSettingsDefaultTemplateId] = useState("");
   const [settingsYtDlp, setSettingsYtDlp] = useState("");
@@ -717,12 +333,40 @@ function App() {
     setSettingsSegmentMinutes(nextConfig.default_segment_minutes);
     setSettingsAutoTranscribe(nextConfig.default_auto_transcribe);
     setSettingsAutoSummarize(nextConfig.default_auto_summarize);
+    setSettingsAutoChapterize(nextConfig.default_auto_chapterize ?? true);
     setSettingsProxy(nextConfig.proxy_url ?? "");
     setSettingsMinDisk(nextConfig.min_free_disk_gb);
     setSettingsReconnect(nextConfig.live_reconnect_attempts);
     setSettingsMaxContextChars(nextConfig.max_context_chars);
+    setSettingsMaxConcurrentJobs(nextConfig.max_concurrent_jobs ?? 2);
+    setSettingsMaxLiveRecords(nextConfig.max_live_records ?? 1);
+    setSettingsCookiesFile(nextConfig.download_cookies_file ?? "");
+    setSettingsCookiesBrowser(nextConfig.download_cookies_from_browser ?? "");
     setSettingsTranscribeModel(nextConfig.transcribe_model ?? "");
     setSettingsTranscribeLanguage(nextConfig.transcribe_language);
+    setSettingsTranscribeModelPreset(
+      nextConfig.transcribe_model_preset ?? "custom",
+    );
+    setSettingsModelPresetSpeed(
+      nextConfig.transcribe_model_presets?.speed ?? "",
+    );
+    setSettingsModelPresetBalanced(
+      nextConfig.transcribe_model_presets?.balanced ?? "",
+    );
+    setSettingsModelPresetQuality(
+      nextConfig.transcribe_model_presets?.quality ?? "",
+    );
+    const glossary = nextConfig.glossary;
+    setSettingsGlossaryHotwords((glossary?.hotwords ?? []).join("\n"));
+    setSettingsGlossaryReplacements(
+      (glossary?.replacements ?? [])
+        .map((pair) => `${pair.from} => ${pair.to}`)
+        .join("\n"),
+    );
+    setSettingsGlossaryWhisperPrompt(
+      glossary?.apply_as_whisper_prompt ?? true,
+    );
+    setSettingsGlossaryPostReplace(glossary?.apply_post_replace ?? true);
     setSettingsDefaultProviderId(nextConfig.default_provider_profile_id ?? "");
     setSettingsDefaultTemplateId(nextConfig.default_template_id ?? "");
     setSettingsYtDlp(nextConfig.sidecar_paths.yt_dlp ?? "");
@@ -789,6 +433,7 @@ function App() {
     setFormProviderId("");
     setFormModel("");
     setFormTemplateId("");
+    setFormTemplateIds([]);
     setFormTranscribeLanguage(nextConfig.transcribe_language);
   }, []);
 
@@ -803,6 +448,10 @@ function App() {
     setLogText("");
     setTranscriptText("");
     setSummaryText("");
+    setSummaryArtifacts([]);
+    setActiveSummaryTemplateId("");
+    setChaptersText("");
+    setSegmentDiffText(null);
   }, []);
 
   const loadJobDetail = useCallback(
@@ -822,6 +471,10 @@ function App() {
         setLogText("正在加载…");
         setTranscriptText("");
         setSummaryText("");
+        setSummaryArtifacts([]);
+        setActiveSummaryTemplateId("");
+        setChaptersText("");
+        setSegmentDiffText(null);
       }
 
       try {
@@ -841,12 +494,19 @@ function App() {
           logNameRef.current = preferredLog;
           setLogName(preferredLog);
         }
-        const [logResult, transcriptResult, summaryResult] =
-          await Promise.allSettled([
-            getJobLog(jobId, preferredLog),
-            getJobTranscript(jobId),
-            getJobSummary(jobId),
-          ]);
+        const [
+          logResult,
+          transcriptResult,
+          summaryResult,
+          summariesResult,
+          chaptersResult,
+        ] = await Promise.allSettled([
+          getJobLog(jobId, preferredLog),
+          getJobTranscript(jobId),
+          getJobSummary(jobId),
+          getJobSummaries(jobId),
+          getJobChapters(jobId),
+        ]);
         if (
           requestVersion !== detailRequestVersionRef.current ||
           selectedJobIdRef.current !== jobId ||
@@ -868,10 +528,28 @@ function App() {
         setSummaryText(
           summaryResult.status === "fulfilled" ? summaryResult.value : "",
         );
-
-        const failedResult = [logResult, transcriptResult, summaryResult].find(
-          (result) => result.status === "rejected",
+        const nextArtifacts =
+          summariesResult.status === "fulfilled" ? summariesResult.value : [];
+        setSummaryArtifacts(nextArtifacts);
+        setActiveSummaryTemplateId((previous) => {
+          if (
+            previous &&
+            nextArtifacts.some((item) => item.template_id === previous)
+          ) {
+            return previous;
+          }
+          return nextArtifacts[0]?.template_id ?? "";
+        });
+        setChaptersText(
+          chaptersResult.status === "fulfilled" ? chaptersResult.value : "",
         );
+
+        const failedResult = [
+          logResult,
+          transcriptResult,
+          summaryResult,
+          chaptersResult,
+        ].find((result) => result.status === "rejected");
         if (failedResult?.status === "rejected") {
           setErrorMessage(
             failedResult.reason instanceof Error
@@ -1091,6 +769,23 @@ function App() {
     orphanGroupFilterOptions.length > 0 ||
     hasUngroupedJobs;
 
+  const recentBatchOptions = useMemo(() => {
+    const seenBatchIds = new Set<string>();
+    const options: string[] = [];
+    for (const job of jobs) {
+      const batchId = job.batch_id?.trim();
+      if (!batchId || seenBatchIds.has(batchId)) {
+        continue;
+      }
+      seenBatchIds.add(batchId);
+      options.push(batchId);
+      if (options.length >= 8) {
+        break;
+      }
+    }
+    return options;
+  }, [jobs]);
+
   const filteredJobs = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     return jobs.filter((job) => {
@@ -1108,6 +803,11 @@ function App() {
           return false;
         }
       }
+      if (batchFilter !== "all") {
+        if ((job.batch_id ?? "") !== batchFilter) {
+          return false;
+        }
+      }
       if (!query) {
         return true;
       }
@@ -1115,6 +815,7 @@ function App() {
         job.id,
         job.title,
         job.source_reference,
+        job.batch_id ?? "",
         jobGroupLabel ?? "",
         job.status,
         STATUS_LABEL[job.status],
@@ -1130,12 +831,13 @@ function App() {
         .toLowerCase();
       return haystack.includes(query);
     });
-  }, [groupFilter, jobs, managedJobGroups, searchQuery]);
+  }, [batchFilter, groupFilter, jobs, managedJobGroups, searchQuery]);
 
   const stats = useMemo(() => {
     return {
       total: jobs.length,
       running: jobs.filter((job) => job.status === "running").length,
+      queued: jobs.filter((job) => job.status === "queued").length,
       failed: jobs.filter((job) => job.status === "failed").length,
       succeeded: jobs.filter((job) => job.status === "succeeded").length,
     };
@@ -1260,18 +962,24 @@ function App() {
     const currentProviderId = selectedJob.pipeline.provider_profile_id ?? "";
     const currentTemplateId = selectedJob.pipeline.template_id ?? "";
     const currentModel = selectedJob.pipeline.model ?? "";
+    const currentTemplateIds = selectedJob.pipeline.template_ids ?? [];
+    const templateIdsChanged =
+      jobTemplateIds.length !== currentTemplateIds.length ||
+      jobTemplateIds.some((id, index) => id !== currentTemplateIds[index]);
     return (
       jobProviderId !== currentProviderId ||
       jobTemplateId !== currentTemplateId ||
+      templateIdsChanged ||
       jobModel !== currentModel
     );
-  }, [jobModel, jobProviderId, jobTemplateId, selectedJob]);
+  }, [jobModel, jobProviderId, jobTemplateId, jobTemplateIds, selectedJob]);
 
   useEffect(() => {
     if (!selectedJob) {
       setJobProviderId("");
       setJobModel("");
       setJobTemplateId("");
+      setJobTemplateIds([]);
       setJobTitleDraft("");
       jobTitleDraftRef.current = "";
       setJobGroupDraft("");
@@ -1280,11 +988,20 @@ function App() {
     setJobProviderId(selectedJob.pipeline.provider_profile_id ?? "");
     setJobModel(selectedJob.pipeline.model ?? "");
     setJobTemplateId(selectedJob.pipeline.template_id ?? "");
+    const ids = selectedJob.pipeline.template_ids ?? [];
+    setJobTemplateIds(
+      ids.length > 0
+        ? ids
+        : selectedJob.pipeline.template_id
+          ? [selectedJob.pipeline.template_id]
+          : [],
+    );
   }, [
     selectedJob?.id,
     selectedJob?.pipeline.provider_profile_id,
     selectedJob?.pipeline.model,
     selectedJob?.pipeline.template_id,
+    selectedJob?.pipeline.template_ids,
   ]);
 
   useEffect(() => {
@@ -1408,10 +1125,17 @@ function App() {
     setFormUrl("");
     setFormTitle("");
     setFormGroup("");
+    setFormCookiesMode("inherit");
+    setFormCookiesFile("");
+    setFormCookiesBrowser("chrome");
     setFormLocalPath("");
     setFormSegmentMinutes(config?.default_segment_minutes ?? 30);
     setAutoTranscribe(config?.default_auto_transcribe ?? true);
     setAutoSummarize(config?.default_auto_summarize ?? false);
+    setAutoChapterize(
+      (config?.default_auto_chapterize ?? true) &&
+        (config?.default_auto_summarize ?? false),
+    );
     setAutoStart(true);
     setFormProviderId("");
     setFormModel("");
@@ -1533,11 +1257,21 @@ function App() {
 
     // Empty selector values mean "follow defaults at summarize run time".
     // Non-empty values pin an explicit override onto the Job.
+    const resolvedFormTemplateIds =
+      formTemplateIds.length > 0
+        ? formTemplateIds
+        : formTemplateId.trim()
+          ? [formTemplateId.trim()]
+          : [];
     const pipeline = {
       auto_transcribe: autoTranscribe,
       auto_summarize: autoSummarize,
+      auto_chapterize: autoChapterize || autoSummarize,
       provider_profile_id: formProviderId.trim() || null,
-      template_id: formTemplateId.trim() || null,
+      template_id:
+        resolvedFormTemplateIds[0] ??
+        (formTemplateId.trim() || null),
+      template_ids: resolvedFormTemplateIds,
       model: formModel.trim() || null,
       transcribe_language: formTranscribeLanguage,
     };
@@ -1546,17 +1280,50 @@ function App() {
     const createGroup = normalizeJobGroup(formGroup);
 
     try {
-      let created: Job;
+      let focusJobId: string | null = null;
       if (createMode === "download") {
-        created = await createDownloadJob({
-          url: formUrl,
+        const batchResult = await createDownloadJobsBatch({
+          urls_text: formUrl,
           title: formTitle || undefined,
           group: createGroup,
           pipeline,
           auto_start: autoStart,
+          download_cookies_mode: formCookiesMode,
+          download_cookies_file:
+            formCookiesMode === "file"
+              ? formCookiesFile.trim() || null
+              : null,
+          download_cookies_from_browser:
+            formCookiesMode === "browser"
+              ? formCookiesBrowser.trim() || null
+              : null,
         });
+        if (batchResult.jobs.length === 0) {
+          throw new Error("未能创建任何下载任务");
+        }
+        focusJobId = batchResult.jobs[0]?.id ?? null;
+        if (batchResult.batch_id) {
+          setBatchFilter(batchResult.batch_id);
+        }
+        closeCreate();
+        try {
+          const refreshedConfig = await getConfig();
+          applyConfigToSettings(refreshedConfig);
+        } catch {
+          // Job create already succeeded; catalog refresh is best-effort.
+        }
+        const createdCount = batchResult.jobs.length;
+        setStatusMessage(
+          createdCount > 1
+            ? autoStart
+              ? `已创建 ${createdCount} 个下载任务并入队（同批 batch 可筛选；下载为最佳努力）`
+              : `已创建 ${createdCount} 个下载任务（同批 batch 可筛选，可在详情中手动运行）`
+            : autoStart
+              ? "任务已创建并开始执行（下载为最佳努力，失败请看日志）"
+              : "任务已创建，可在详情中手动运行",
+        );
       } else if (createMode === "live") {
-        created = await createLiveRecordJob({
+        const created = await createLiveRecordJob({
           url: formUrl,
           title: formTitle || undefined,
           group: createGroup,
@@ -1564,30 +1331,45 @@ function App() {
           pipeline,
           auto_start: autoStart,
         });
+        focusJobId = created.id;
+        closeCreate();
+        try {
+          const refreshedConfig = await getConfig();
+          applyConfigToSettings(refreshedConfig);
+        } catch {
+          // Job create already succeeded; catalog refresh is best-effort.
+        }
+        setStatusMessage(
+          autoStart
+            ? "任务已创建并开始执行（下载为最佳努力，失败请看日志）"
+            : "任务已创建，可在详情中手动运行",
+        );
       } else {
-        created = await createImportJob({
+        const created = await createImportJob({
           local_path: formLocalPath,
           title: formTitle || undefined,
           group: createGroup,
           pipeline,
           auto_start: autoStart,
         });
+        focusJobId = created.id;
+        closeCreate();
+        try {
+          const refreshedConfig = await getConfig();
+          applyConfigToSettings(refreshedConfig);
+        } catch {
+          // Job create already succeeded; catalog refresh is best-effort.
+        }
+        setStatusMessage(
+          autoStart
+            ? "任务已创建并开始执行（下载为最佳努力，失败请看日志）"
+            : "任务已创建，可在详情中手动运行",
+        );
       }
 
-      closeCreate();
-      // Creating with a new group name may have extended the managed catalog.
-      try {
-        const refreshedConfig = await getConfig();
-        applyConfigToSettings(refreshedConfig);
-      } catch {
-        // Job create already succeeded; catalog refresh is best-effort.
+      if (focusJobId) {
+        await loadJobDetail(focusJobId);
       }
-      setStatusMessage(
-        autoStart
-          ? "任务已创建并开始执行（下载为最佳努力，失败请看日志）"
-          : "任务已创建，可在详情中手动运行",
-      );
-      await loadJobDetail(created.id);
       await refresh();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
@@ -1614,10 +1396,19 @@ function App() {
     setErrorMessage(null);
     setStatusMessage(null);
     try {
+      const resolvedJobTemplateIds =
+        jobTemplateIds.length > 0
+          ? jobTemplateIds
+          : jobTemplateId.trim()
+            ? [jobTemplateId.trim()]
+            : [];
       const updatedJob = await updateJobPipeline({
         job_id: selectedJob.id,
         provider_profile_id: jobProviderId.trim() || null,
-        template_id: jobTemplateId.trim() || null,
+        template_id:
+          resolvedJobTemplateIds[0] ??
+          (jobTemplateId.trim() || null),
+        template_ids: resolvedJobTemplateIds,
         model: jobModel.trim() || null,
       });
       selectedJobRef.current = updatedJob;
@@ -1849,12 +1640,33 @@ function App() {
     try {
       setTranscriptText("");
       setSummaryText("");
+      setChaptersText("");
+      setSegmentDiffText(null);
       await retryTranscriptSegment(jobId, segmentId);
       setStatusMessage(`已开始重试转写分段：${segmentId}`);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  async function handleCompareSegment(jobId: string, segmentId: string) {
+    setErrorMessage(null);
+    try {
+      const result = await getTranscriptSegmentTexts(jobId, segmentId);
+      if (!result.previous?.trim()) {
+        setSegmentDiffText(
+          `分段 ${segmentId} 尚无上一版文本（仅在重试转写后会生成 .prev.txt）。\n\n—— 当前 ——\n${result.current || "（空）"}`,
+        );
+      } else {
+        setSegmentDiffText(
+          `分段 ${segmentId} 文本对比\n\n—— 上一版 ——\n${result.previous}\n\n—— 当前 ——\n${result.current || "（空）"}`,
+        );
+      }
+      setJobDetailSection("segments");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -1879,6 +1691,60 @@ function App() {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  const recoverySuggestion = useMemo(
+    () => (selectedJob ? buildRecoverySuggestion(selectedJob) : null),
+    [selectedJob],
+  );
+
+  function openSettingsSection(section: SettingsSection) {
+    setView("settings");
+    setSettingsSection(section);
+  }
+
+  function openJobDetailSection(section: JobDetailSection) {
+    setJobDetailSection(section);
+  }
+
+  async function handleRecoveryAction(
+    action: RecoveryAction,
+    suggestion: RecoverySuggestion,
+  ) {
+    if (!selectedJob) {
+      return;
+    }
+    switch (action.id) {
+      case "retry_step":
+        await handleRun(selectedJob.id, suggestion.retryStep);
+        break;
+      case "retry_pipeline":
+        await handleRun(selectedJob.id, null);
+        break;
+      case "open_logs":
+        openJobDetailSection("logs");
+        break;
+      case "open_directory":
+        await handleOpenDirectory(selectedJob.id);
+        break;
+      case "open_settings_sidecars":
+        openSettingsSection("sidecars");
+        break;
+      case "open_settings_pipeline":
+        openSettingsSection(suggestion.settingsSection ?? "pipeline");
+        break;
+      case "open_settings_providers":
+        openSettingsSection("providers");
+        break;
+      case "open_segments":
+        openJobDetailSection("segments");
+        break;
+      case "open_pipeline":
+        openJobDetailSection(suggestion.detailSection ?? "summarize");
+        break;
+      default:
+        break;
     }
   }
 
@@ -1927,12 +1793,48 @@ function App() {
         default_segment_minutes: settingsSegmentMinutes,
         default_auto_transcribe: settingsAutoTranscribe,
         default_auto_summarize: settingsAutoSummarize,
+        default_auto_chapterize: settingsAutoChapterize,
         proxy_url: settingsProxy,
         min_free_disk_gb: settingsMinDisk,
         live_reconnect_attempts: settingsReconnect,
         max_context_chars: settingsMaxContextChars,
+        max_concurrent_jobs: settingsMaxConcurrentJobs,
+        max_live_records: settingsMaxLiveRecords,
+        download_cookies_file: settingsCookiesFile.trim() || null,
+        download_cookies_from_browser: settingsCookiesBrowser.trim() || null,
         transcribe_model: settingsTranscribeModel,
         transcribe_language: settingsTranscribeLanguage,
+        transcribe_model_preset: settingsTranscribeModelPreset,
+        transcribe_model_presets: {
+          speed: settingsModelPresetSpeed.trim() || null,
+          balanced: settingsModelPresetBalanced.trim() || null,
+          quality: settingsModelPresetQuality.trim() || null,
+        } satisfies TranscribeModelPresets,
+        glossary: {
+          hotwords: settingsGlossaryHotwords
+            .split(/[\n,]/)
+            .map((value) => value.trim())
+            .filter(Boolean),
+          replacements: settingsGlossaryReplacements
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .map((line) => {
+              const separatorIndex = line.includes("=>")
+                ? line.indexOf("=>")
+                : line.indexOf("→");
+              if (separatorIndex < 0) {
+                return { from: line, to: line };
+              }
+              return {
+                from: line.slice(0, separatorIndex).trim(),
+                to: line.slice(separatorIndex + (line.includes("=>") ? 2 : 1)).trim(),
+              };
+            })
+            .filter((pair) => pair.from.length > 0),
+          apply_as_whisper_prompt: settingsGlossaryWhisperPrompt,
+          apply_post_replace: settingsGlossaryPostReplace,
+        } satisfies GlossaryConfig,
         default_provider_profile_id: defaultProviderProfileId,
         default_template_id: defaultTemplateId,
         sidecar_paths: {
@@ -1959,6 +1861,175 @@ function App() {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  async function handleInspectWorkspaceHealth() {
+    setIsInspectingHealth(true);
+    setErrorMessage(null);
+    try {
+      const report = await inspectWorkspaceHealth();
+      setWorkspaceHealth(report);
+      setStatusMessage("工作区诊断完成");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsInspectingHealth(false);
+    }
+  }
+
+  async function handleRefreshDependencyReport() {
+    setIsLoadingP4Tools(true);
+    setErrorMessage(null);
+    try {
+      const report = await getDependencyReport();
+      setDependencyReport(report);
+      setStatusMessage(
+        report.all_required_ready
+          ? "依赖检查通过：必需工具均已就绪"
+          : `缺少必需工具：${report.missing_required.join("、")}`,
+      );
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsLoadingP4Tools(false);
+    }
+  }
+
+  async function handleRefreshModelInventory() {
+    setIsLoadingP4Tools(true);
+    setErrorMessage(null);
+    try {
+      const inventory = await listTranscribeModels();
+      setModelInventory(inventory);
+      setStatusMessage(
+        inventory.selected_exists
+          ? `已扫描 ${inventory.models.length} 个模型文件`
+          : "当前选用模型文件不存在或未配置",
+      );
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsLoadingP4Tools(false);
+    }
+  }
+
+  async function handleOpenModelDirectory() {
+    setErrorMessage(null);
+    try {
+      const directory = await openTranscribeModelDirectory();
+      await openPath(directory);
+      setStatusMessage(`已打开模型目录：${directory}`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleExportAppConfig() {
+    setIsLoadingP4Tools(true);
+    setErrorMessage(null);
+    try {
+      const packagePayload = await exportAppConfig(false);
+      const jsonText = JSON.stringify(packagePayload, null, 2);
+      await navigator.clipboard.writeText(jsonText);
+      setStatusMessage(
+        `配置已复制到剪贴板（已剥离 API Key，${packagePayload.providers.length} 个 Provider / ${packagePayload.templates.length} 个模板）`,
+      );
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsLoadingP4Tools(false);
+    }
+  }
+
+  async function handleImportAppConfigFromClipboard() {
+    setIsLoadingP4Tools(true);
+    setErrorMessage(null);
+    try {
+      const rawText = await navigator.clipboard.readText();
+      const packagePayload = JSON.parse(rawText) as ConfigExportPackage;
+      if (
+        !packagePayload ||
+        typeof packagePayload !== "object" ||
+        !Array.isArray(packagePayload.providers)
+      ) {
+        throw new Error("剪贴板内容不是有效的配置导出包");
+      }
+      const result = await importAppConfig(packagePayload, false);
+      const nextConfig = await getConfig();
+      applyConfigToSettings(nextConfig);
+      const nextSidecars = await probeSidecars();
+      setSidecars(nextSidecars);
+      setStatusMessage(result.message);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsLoadingP4Tools(false);
+    }
+  }
+
+  async function handleCheckAppUpdate() {
+    setIsLoadingP4Tools(true);
+    setErrorMessage(null);
+    try {
+      const result = await checkAppUpdate();
+      setUpdateCheckResult(result);
+      setStatusMessage(result.message);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsLoadingP4Tools(false);
+    }
+  }
+
+  async function handleOpenReleasePage() {
+    const url =
+      updateCheckResult?.release_page_url?.trim() || "https://github.com";
+    try {
+      await openPath(url);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleLoadSystemDiagnostics() {
+    setIsLoadingP4Tools(true);
+    setErrorMessage(null);
+    try {
+      const diagnostics = await getSystemDiagnostics();
+      setSystemDiagnostics(diagnostics);
+      setDependencyReport(diagnostics.dependency);
+      setModelInventory(diagnostics.models);
+      setWorkspaceHealth(diagnostics.workspace_health);
+      setSidecars(diagnostics.sidecars);
+      setStatusMessage("系统诊断已刷新");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsLoadingP4Tools(false);
+    }
+  }
+
+  async function handleRepairWorkspaceHealth() {
+    setIsRepairingHealth(true);
+    setErrorMessage(null);
+    try {
+      const report = await repairWorkspaceHealth();
+      setWorkspaceHealth(report);
+      const nextJobs = await listJobs();
+      setJobs(nextJobs);
+      if (selectedJobIdRef.current) {
+        await loadJobDetail(selectedJobIdRef.current, logNameRef.current, false);
+      }
+      const repairedSummary =
+        report.repaired.length > 0
+          ? report.repaired.join("；")
+          : "没有需要自动修复的项";
+      setStatusMessage(`工作区修复完成：${repairedSummary}`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsRepairingHealth(false);
     }
   }
 
@@ -2356,7 +2427,61 @@ function App() {
 
   const hasTranscriptSegments =
     (selectedJob?.transcript_segments.length ?? 0) > 0;
-  const hasSummaryArtifact = Boolean(summaryText);
+  const hasSummaryArtifact =
+    Boolean(summaryText) || summaryArtifacts.length > 0;
+  const activeSummaryContent =
+    summaryArtifacts.find(
+      (item) => item.template_id === activeSummaryTemplateId,
+    )?.content ??
+    summaryText ??
+    "";
+
+  async function handleFullTextSearch() {
+    const query = fullTextQuery.trim();
+    if (!query) {
+      setFullTextHits([]);
+      setFullTextHasSearched(false);
+      return;
+    }
+    setIsFullTextSearching(true);
+    setErrorMessage(null);
+    try {
+      const hits = await searchWorkspace(query, 40);
+      setFullTextHits(hits);
+      setFullTextHasSearched(true);
+    } catch (error) {
+      setFullTextHasSearched(true);
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsFullTextSearching(false);
+    }
+  }
+
+  function clearFullTextSearch() {
+    setFullTextQuery("");
+    setFullTextHits([]);
+    setFullTextHasSearched(false);
+  }
+
+  function openFullTextHit(hit: SearchHit) {
+    void loadJobDetail(hit.job_id);
+    setJobDetailSection(hit.field === "transcript" ? "transcript" : "summary");
+    setFullTextHits([]);
+    setFullTextHasSearched(false);
+  }
+
+  async function handleRebuildSearchIndex() {
+    setIsBusy(true);
+    setErrorMessage(null);
+    try {
+      const count = await rebuildSearchIndex();
+      setStatusMessage(`已重建搜索索引（${count} 个任务）`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
   const hasTranscriptArtifact = Boolean(transcriptText);
   const availableJobDetailSections = useMemo(
     () =>
@@ -2522,6 +2647,10 @@ function App() {
                   <span className="stat-label">运行中</span>
                   <strong>{stats.running}</strong>
                 </div>
+                <div className="stat-card">
+                  <span className="stat-label">排队中</span>
+                  <strong>{stats.queued}</strong>
+                </div>
                 <div className="stat-card ok">
                   <span className="stat-label">成功</span>
                   <strong>{stats.succeeded}</strong>
@@ -2543,11 +2672,157 @@ function App() {
                   <input
                     className="search"
                     aria-label="搜索任务"
-                    placeholder="搜索标题 / URL / 分组 / 状态 / ID"
+                    placeholder="筛选标题 / URL / 分组 / batch / 状态 / ID"
                     value={searchQuery}
                     onChange={(event) => setSearchQuery(event.target.value)}
                   />
                 </div>
+                <div className="fulltext-search-bar">
+                  <div className="fulltext-search-combo">
+                    <input
+                      className="search fulltext-search-input"
+                      aria-label="跨任务全文检索"
+                      placeholder="搜转写 / 总结…"
+                      value={fullTextQuery}
+                      onChange={(event) => {
+                        setFullTextQuery(event.target.value);
+                        if (event.target.value.trim() === "") {
+                          setFullTextHits([]);
+                          setFullTextHasSearched(false);
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void handleFullTextSearch();
+                        }
+                        if (event.key === "Escape") {
+                          clearFullTextSearch();
+                        }
+                      }}
+                    />
+                    {(fullTextQuery || fullTextHasSearched) && (
+                      <button
+                        type="button"
+                        className="fulltext-clear-icon"
+                        aria-label="清除全文检索"
+                        onClick={() => clearFullTextSearch()}
+                      >
+                        ×
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn small fulltext-search-submit"
+                      disabled={isFullTextSearching}
+                      onClick={() => void handleFullTextSearch()}
+                    >
+                      {isFullTextSearching ? "…" : "搜"}
+                    </button>
+                  </div>
+                  {(fullTextHits.length > 0 || fullTextHasSearched) && (
+                    <div
+                      className="fulltext-dropdown"
+                      role="listbox"
+                      aria-label="全文检索结果"
+                    >
+                      <div className="fulltext-dropdown-head">
+                        <span>
+                          {fullTextHits.length > 0
+                            ? `${fullTextHits.length} 条匹配`
+                            : "无匹配结果"}
+                        </span>
+                        <button
+                          type="button"
+                          className="fulltext-reindex-link"
+                          disabled={isBusy}
+                          onClick={() => void handleRebuildSearchIndex()}
+                        >
+                          重建索引
+                        </button>
+                      </div>
+                      {fullTextHits.length > 0 && (
+                        <div className="fulltext-hits" role="list">
+                          {fullTextHits.map((hit) => {
+                            const fieldLabel =
+                              hit.field === "transcript"
+                                ? "转写"
+                                : hit.field === "summary"
+                                  ? "总结"
+                                  : hit.field === "summary_template"
+                                    ? "模板"
+                                    : hit.field;
+                            const cleanSnippet = hit.snippet
+                              .replace(/\s+/g, " ")
+                              .trim();
+                            return (
+                              <button
+                                key={`${hit.job_id}-${hit.path}-${cleanSnippet.slice(0, 20)}`}
+                                type="button"
+                                className="fulltext-hit"
+                                role="option"
+                                title={hit.title}
+                                onClick={() => openFullTextHit(hit)}
+                              >
+                                <div className="fulltext-hit-top">
+                                  <span className="fulltext-hit-title">
+                                    {hit.title}
+                                  </span>
+                                  <span className="fulltext-hit-badge">
+                                    {fieldLabel}
+                                  </span>
+                                </div>
+                                <p className="fulltext-snippet">
+                                  {cleanSnippet}
+                                </p>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {recentBatchOptions.length > 0 && (
+                  <div
+                    className="group-filter-bar"
+                    role="toolbar"
+                    aria-label="按批量创建筛选任务"
+                  >
+                    <button
+                      type="button"
+                      className={
+                        batchFilter === "all"
+                          ? "chip group-filter-chip active"
+                          : "chip group-filter-chip"
+                      }
+                      aria-pressed={batchFilter === "all"}
+                      onClick={() => setBatchFilter("all")}
+                    >
+                      全部批次
+                    </button>
+                    {recentBatchOptions.map((batchId) => {
+                      const isActive = batchFilter === batchId;
+                      return (
+                        <button
+                          key={batchId}
+                          type="button"
+                          className={
+                            isActive
+                              ? "chip group-filter-chip active"
+                              : "chip group-filter-chip"
+                          }
+                          aria-pressed={isActive}
+                          title={batchId}
+                          onClick={() => setBatchFilter(batchId)}
+                        >
+                          批次 {batchId.slice(0, 8)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
 
                 {hasAnyGroupFilterChips && (
                   <div
@@ -2688,17 +2963,34 @@ function App() {
                               {KIND_LABEL[job.kind]}
                             </span>
                             <span className={`pill status-${job.status}`}>
-                              {STATUS_LABEL[job.status]}
+                              {formatQueueStatusLabel(
+                                job.status,
+                                job.queue_position,
+                              )}
                             </span>
                           </div>
-                          {resolveJobGroupLabel(job.group, managedJobGroups) && (
+                          {(resolveJobGroupLabel(job.group, managedJobGroups) ||
+                            job.batch_id) && (
                             <div className="job-card-group">
-                              <span className="pill group-pill">
-                                {resolveJobGroupLabel(
-                                  job.group,
-                                  managedJobGroups,
-                                )}
-                              </span>
+                              {resolveJobGroupLabel(
+                                job.group,
+                                managedJobGroups,
+                              ) && (
+                                <span className="pill group-pill">
+                                  {resolveJobGroupLabel(
+                                    job.group,
+                                    managedJobGroups,
+                                  )}
+                                </span>
+                              )}
+                              {job.batch_id && (
+                                <span
+                                  className="pill group-pill"
+                                  title={job.batch_id}
+                                >
+                                  批次 {job.batch_id.slice(0, 8)}
+                                </span>
+                              )}
                             </div>
                           )}
                           <div className="job-title">{job.title}</div>
@@ -2743,7 +3035,9 @@ function App() {
                             title={
                               job.status === "running"
                                 ? "运行中的任务不能删除"
-                                : "永久删除任务及全部产物"
+                                : job.status === "queued"
+                                  ? "从队列移除并永久删除任务"
+                                  : "永久删除任务及全部产物"
                             }
                             onClick={() => void handleDeleteJob(job)}
                           >
@@ -2774,7 +3068,11 @@ function App() {
                         <div className="detail-kicker">
                           {KIND_LABEL[selectedJob.source.kind]} ·{" "}
                           <span className={`pill status-${selectedJob.status}`}>
-                            {STATUS_LABEL[selectedJob.status]}
+                            {formatQueueStatusLabel(
+                              selectedJob.status,
+                              jobs.find((job) => job.id === selectedJob.id)
+                                ?.queue_position,
+                            )}
                           </span>
                         </div>
                         <label className="job-title-field">
@@ -2866,7 +3164,58 @@ function App() {
                       </div>
                     </div>
 
-                    {selectedJob.error_message && (
+                    {recoverySuggestion && (
+                      <div className="recovery-card" role="region" aria-label="修复建议">
+                        <div className="recovery-card-header">
+                          <div>
+                            <div className="recovery-kicker">修复建议</div>
+                            <h3 className="recovery-title">{recoverySuggestion.title}</h3>
+                          </div>
+                          <span className="pill recovery-code mono">
+                            {recoverySuggestion.code}
+                          </span>
+                        </div>
+                        <p className="recovery-summary">{recoverySuggestion.summary}</p>
+                        {selectedJob.error_message && (
+                          <div className="recovery-error mono small">
+                            {selectedJob.error_message}
+                          </div>
+                        )}
+                        {recoverySuggestion.hints.length > 0 && (
+                          <ul className="recovery-hints">
+                            {recoverySuggestion.hints.map((hint) => (
+                              <li key={hint}>{hint}</li>
+                            ))}
+                          </ul>
+                        )}
+                        <div className="recovery-actions">
+                          {recoverySuggestion.actions.map((action) => (
+                            <button
+                              key={`${action.id}-${action.label}`}
+                              className={
+                                action.primary ? "btn" : "btn secondary"
+                              }
+                              type="button"
+                              disabled={
+                                isBusy ||
+                                selectedJob.status === "running" ||
+                                selectedJob.status === "queued"
+                              }
+                              onClick={() =>
+                                void handleRecoveryAction(
+                                  action,
+                                  recoverySuggestion,
+                                )
+                              }
+                            >
+                              {action.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {!recoverySuggestion && selectedJob.error_message && (
                       <div className="banner error inline">
                         {selectedJob.error_message}
                       </div>
@@ -3116,10 +3465,23 @@ function App() {
                                 {selectedJob.pipeline.auto_transcribe
                                   ? "开"
                                   : "关"}{" "}
+                                · 自动章节：
+                                {selectedJob.pipeline.auto_chapterize
+                                  ? "开"
+                                  : "关"}{" "}
                                 · 自动总结：
                                 {selectedJob.pipeline.auto_summarize
                                   ? "开"
                                   : "关"}
+                                {selectedJob.glossary_hash ? (
+                                  <>
+                                    {" "}
+                                    · 术语表：
+                                    <span className="mono">
+                                      {selectedJob.glossary_hash.slice(0, 8)}
+                                    </span>
+                                  </>
+                                ) : null}
                               </div>
                             </article>
                           </div>
@@ -3198,33 +3560,80 @@ function App() {
                                     </select>
                                   </label>
                                 </div>
-                                <label>
-                                  <span>总结模板</span>
-                                  <select
-                                    value={jobTemplateId}
-                                    disabled={
-                                      selectedJob.status === "running" ||
-                                      isSavingJobPipeline
-                                    }
-                                    onChange={(event) =>
-                                      setJobTemplateId(event.target.value)
-                                    }
-                                  >
-                                    <option value="">使用全局默认</option>
-                                    {config?.templates.map((template) => (
-                                      <option
-                                        key={template.id}
-                                        value={template.id}
-                                      >
-                                        {template.name}
-                                        {template.id ===
-                                        config.default_template_id
-                                          ? "（全局默认）"
-                                          : ""}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </label>
+                                <div className="multi-template-picker">
+                                  <span>总结模板（可多选，顺序=产出顺序）</span>
+                                  <p className="muted small">
+                                    第一项写入 summary/summary.md；其余写入
+                                    summary/by_template/。不选则跟随全局默认。
+                                  </p>
+                                  <div className="multi-template-list">
+                                    {config?.templates.map((template) => {
+                                      const checked = jobTemplateIds.includes(
+                                        template.id,
+                                      );
+                                      const orderIndex =
+                                        jobTemplateIds.indexOf(template.id);
+                                      return (
+                                        <label
+                                          key={template.id}
+                                          className="multi-template-item"
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            disabled={
+                                              selectedJob.status ===
+                                                "running" ||
+                                              isSavingJobPipeline
+                                            }
+                                            onChange={() => {
+                                              setJobTemplateIds((previous) => {
+                                                if (
+                                                  previous.includes(template.id)
+                                                ) {
+                                                  return previous.filter(
+                                                    (id) => id !== template.id,
+                                                  );
+                                                }
+                                                return [
+                                                  ...previous,
+                                                  template.id,
+                                                ];
+                                              });
+                                              setJobTemplateId((previous) => {
+                                                if (
+                                                  jobTemplateIds.includes(
+                                                    template.id,
+                                                  )
+                                                ) {
+                                                  const next =
+                                                    jobTemplateIds.filter(
+                                                      (id) =>
+                                                        id !== template.id,
+                                                    );
+                                                  return next[0] ?? "";
+                                                }
+                                                return (
+                                                  previous || template.id
+                                                );
+                                              });
+                                            }}
+                                          />
+                                          <span>
+                                            {orderIndex >= 0
+                                              ? `${orderIndex + 1}. `
+                                              : ""}
+                                            {template.name}
+                                            {template.id ===
+                                            config.default_template_id
+                                              ? "（全局默认）"
+                                              : ""}
+                                          </span>
+                                        </label>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
                                 <div className="detail-actions summarize-config-actions">
                                   <button
                                     type="button"
@@ -3336,11 +3745,29 @@ function App() {
                                           >
                                             重试转写
                                           </button>
+                                          <button
+                                            type="button"
+                                            className="chip"
+                                            disabled={isBusy}
+                                            onClick={() => {
+                                              void handleCompareSegment(
+                                                selectedJob.id,
+                                                segment.id,
+                                              );
+                                            }}
+                                          >
+                                            对比上一版
+                                          </button>
                                         </div>
                                       </div>
                                     ),
                                   )}
                                 </div>
+                                {segmentDiffText && (
+                                  <pre className="artifact-view transcript-view segment-diff-view">
+                                    {segmentDiffText}
+                                  </pre>
+                                )}
                               </article>
                             </div>
                           )}
@@ -3425,9 +3852,45 @@ function App() {
                                     可读文档视图
                                   </span>
                                 </div>
+                                {summaryArtifacts.length > 1 && (
+                                  <div
+                                    className="summary-template-tabs"
+                                    role="tablist"
+                                    aria-label="多模板产物"
+                                  >
+                                    {summaryArtifacts.map((artifact) => (
+                                      <button
+                                        key={artifact.template_id}
+                                        type="button"
+                                        role="tab"
+                                        className={
+                                          activeSummaryTemplateId ===
+                                          artifact.template_id
+                                            ? "chip active"
+                                            : "chip"
+                                        }
+                                        aria-selected={
+                                          activeSummaryTemplateId ===
+                                          artifact.template_id
+                                        }
+                                        onClick={() =>
+                                          setActiveSummaryTemplateId(
+                                            artifact.template_id,
+                                          )
+                                        }
+                                      >
+                                        {artifact.primary
+                                          ? `主模板 · ${artifact.template_id}`
+                                          : artifact.template_id}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
                                 <div className="markdown-view">
                                   <ReactMarkdown>
-                                    {unwrapOuterMarkdownFence(summaryText)}
+                                    {unwrapOuterMarkdownFence(
+                                      activeSummaryContent,
+                                    )}
                                   </ReactMarkdown>
                                 </div>
                               </article>
@@ -3451,6 +3914,21 @@ function App() {
                                   {transcriptText}
                                 </pre>
                               </article>
+                              {(chaptersText.trim().length > 0 ||
+                                selectedJob.chapters_path) && (
+                                <article className="card soft transcript-card">
+                                  <div className="artifact-card-header">
+                                    <h3>章节大纲</h3>
+                                    <span className="muted small">
+                                      {selectedJob.chapters_path ??
+                                        "transcript/chapters.md"}
+                                    </span>
+                                  </div>
+                                  <pre className="artifact-view transcript-view">
+                                    {chaptersText || "（章节尚未生成）"}
+                                  </pre>
+                                </article>
+                              )}
                             </div>
                           )}
                       </div>
@@ -3713,6 +4191,190 @@ function App() {
                       />
                       默认自动总结
                     </label>
+                    <label className="checkbox">
+                      <input
+                        type="checkbox"
+                        checked={settingsAutoChapterize}
+                        onChange={(event) =>
+                          setSettingsAutoChapterize(event.target.checked)
+                        }
+                      />
+                      默认自动章节大纲（总结前）
+                    </label>
+                  </div>
+                  <label>
+                    <span>术语表热词（每行一个，用于 whisper 初始提示）</span>
+                    <textarea
+                      rows={3}
+                      value={settingsGlossaryHotwords}
+                      onChange={(event) =>
+                        setSettingsGlossaryHotwords(event.target.value)
+                      }
+                      placeholder="例如：OpenAI&#10;张三"
+                    />
+                  </label>
+                  <label>
+                    <span>合并后替换（每行：错误写法 =&gt; 正确写法）</span>
+                    <textarea
+                      rows={3}
+                      value={settingsGlossaryReplacements}
+                      onChange={(event) =>
+                        setSettingsGlossaryReplacements(event.target.value)
+                      }
+                      placeholder="openai =&gt; OpenAI"
+                    />
+                  </label>
+                  <div className="checkbox-row">
+                    <label className="checkbox">
+                      <input
+                        type="checkbox"
+                        checked={settingsGlossaryWhisperPrompt}
+                        onChange={(event) =>
+                          setSettingsGlossaryWhisperPrompt(event.target.checked)
+                        }
+                      />
+                      转写时注入热词 prompt
+                    </label>
+                    <label className="checkbox">
+                      <input
+                        type="checkbox"
+                        checked={settingsGlossaryPostReplace}
+                        onChange={(event) =>
+                          setSettingsGlossaryPostReplace(event.target.checked)
+                        }
+                      />
+                      合并后应用替换
+                    </label>
+                  </div>
+                  <div className="transcribe-model-setup">
+                    <div className="settings-block-title">
+                      <h3>转写模型怎么选</h3>
+                      <p className="muted small">
+                        Whisper 需要本机一个{" "}
+                        <code className="inline-code">.bin</code> 模型文件。
+                        日常只需选好「当前使用」；下面三套路径是可选快捷切换（小模型更快，大模型更准）。
+                      </p>
+                    </div>
+                    <label>
+                      <span>当前使用</span>
+                      <select
+                        value={settingsTranscribeModelPreset}
+                        onChange={(event) =>
+                          setSettingsTranscribeModelPreset(event.target.value)
+                        }
+                      >
+                        <option value="custom">下面这个主模型文件</option>
+                        <option value="speed">
+                          速度预设（小模型，快，略糙）
+                        </option>
+                        <option value="balanced">
+                          平衡预设（推荐日常）
+                        </option>
+                        <option value="quality">
+                          质量预设（大模型，慢，更准）
+                        </option>
+                      </select>
+                    </label>
+                    <p className="muted small transcribe-model-active-hint">
+                      实际会用：
+                      <span className="mono">
+                        {settingsTranscribeModelPreset === "speed"
+                          ? settingsModelPresetSpeed.trim() ||
+                            settingsTranscribeModel.trim() ||
+                            "（未配置速度预设，也无主模型）"
+                          : settingsTranscribeModelPreset === "balanced"
+                            ? settingsModelPresetBalanced.trim() ||
+                              settingsTranscribeModel.trim() ||
+                              "（未配置平衡预设，也无主模型）"
+                            : settingsTranscribeModelPreset === "quality"
+                              ? settingsModelPresetQuality.trim() ||
+                                settingsTranscribeModel.trim() ||
+                                "（未配置质量预设，也无主模型）"
+                              : settingsTranscribeModel.trim() ||
+                                "（尚未选择主模型文件）"}
+                      </span>
+                    </p>
+                    {settingsTranscribeModelPreset !== "custom" && (
+                      <p className="muted small">
+                        若对应预设路径为空，会回退到主模型文件。
+                      </p>
+                    )}
+                    <details className="transcribe-preset-details">
+                      <summary>可选：配置速度 / 平衡 / 质量三套模型路径</summary>
+                      <p className="muted small">
+                        只有打算在「当前使用」里切换预设时才需要填。三套可以指向不同
+                        ggml 文件，例如 tiny / small / medium。
+                      </p>
+                      <PathPickerField
+                        label="速度预设 · 模型文件"
+                        value={settingsModelPresetSpeed}
+                        emptyValueLabel="未设置（会回退主模型）"
+                        selectButtonLabel="选择文件"
+                        isSelecting={
+                          activeSettingsPathPicker === "model-preset-speed"
+                        }
+                        isDisabled={isBusy || settingsPathSelectionIsActive}
+                        onSelect={() =>
+                          void handleSelectSettingsPath({
+                            pickerId: "model-preset-speed",
+                            title: "选择速度预设 GGML 模型",
+                            currentPath: settingsModelPresetSpeed,
+                            selectionKind: "file",
+                            filters: [
+                              { name: "GGML 模型", extensions: ["bin"] },
+                            ],
+                            updatePath: setSettingsModelPresetSpeed,
+                          })
+                        }
+                        onClear={() => setSettingsModelPresetSpeed("")}
+                      />
+                      <PathPickerField
+                        label="平衡预设 · 模型文件"
+                        value={settingsModelPresetBalanced}
+                        emptyValueLabel="未设置（会回退主模型）"
+                        selectButtonLabel="选择文件"
+                        isSelecting={
+                          activeSettingsPathPicker === "model-preset-balanced"
+                        }
+                        isDisabled={isBusy || settingsPathSelectionIsActive}
+                        onSelect={() =>
+                          void handleSelectSettingsPath({
+                            pickerId: "model-preset-balanced",
+                            title: "选择平衡预设 GGML 模型",
+                            currentPath: settingsModelPresetBalanced,
+                            selectionKind: "file",
+                            filters: [
+                              { name: "GGML 模型", extensions: ["bin"] },
+                            ],
+                            updatePath: setSettingsModelPresetBalanced,
+                          })
+                        }
+                        onClear={() => setSettingsModelPresetBalanced("")}
+                      />
+                      <PathPickerField
+                        label="质量预设 · 模型文件"
+                        value={settingsModelPresetQuality}
+                        emptyValueLabel="未设置（会回退主模型）"
+                        selectButtonLabel="选择文件"
+                        isSelecting={
+                          activeSettingsPathPicker === "model-preset-quality"
+                        }
+                        isDisabled={isBusy || settingsPathSelectionIsActive}
+                        onSelect={() =>
+                          void handleSelectSettingsPath({
+                            pickerId: "model-preset-quality",
+                            title: "选择质量预设 GGML 模型",
+                            currentPath: settingsModelPresetQuality,
+                            selectionKind: "file",
+                            filters: [
+                              { name: "GGML 模型", extensions: ["bin"] },
+                            ],
+                            updatePath: setSettingsModelPresetQuality,
+                          })
+                        }
+                        onClear={() => setSettingsModelPresetQuality("")}
+                      />
+                    </details>
                   </div>
                   <div className="two-col">
                     <label>
@@ -3738,6 +4400,80 @@ function App() {
                       />
                     </label>
                   </div>
+                  <div className="two-col">
+                    <label>
+                      <span>全局并发任务数</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={64}
+                        value={settingsMaxConcurrentJobs}
+                        onChange={(event) =>
+                          setSettingsMaxConcurrentJobs(
+                            Number(event.target.value) || 1,
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>直播并发录制数</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={16}
+                        value={settingsMaxLiveRecords}
+                        onChange={(event) =>
+                          setSettingsMaxLiveRecords(
+                            Number(event.target.value) || 1,
+                          )
+                        }
+                      />
+                    </label>
+                  </div>
+                  <p className="muted small">
+                    超出全局并发的任务会进入 FIFO 队列（状态「排队中」）。直播录制另受直播并发上限约束。
+                  </p>
+                  <PathPickerField
+                    label="默认 cookies.txt（yt-dlp，可选）"
+                    value={settingsCookiesFile}
+                    emptyValueLabel="未配置 Cookie 文件"
+                    selectButtonLabel="选择文件"
+                    isSelecting={activeSettingsPathPicker === "cookies-file"}
+                    isDisabled={isBusy || settingsPathSelectionIsActive}
+                    onSelect={() =>
+                      void handleSelectSettingsPath({
+                        pickerId: "cookies-file",
+                        title: "选择 Netscape cookies.txt",
+                        currentPath: settingsCookiesFile,
+                        selectionKind: "file",
+                        filters: [
+                          { name: "Cookies", extensions: ["txt"] },
+                          { name: "所有文件", extensions: ["*"] },
+                        ],
+                        updatePath: setSettingsCookiesFile,
+                      })
+                    }
+                    onClear={() => setSettingsCookiesFile("")}
+                  />
+                  <label>
+                    <span>默认从浏览器导入 Cookie（yt-dlp，可选）</span>
+                    <select
+                      value={settingsCookiesBrowser}
+                      onChange={(event) =>
+                        setSettingsCookiesBrowser(event.target.value)
+                      }
+                    >
+                      <option value="">不使用浏览器 Cookie</option>
+                      {COOKIES_BROWSER_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="muted small">
+                    仅路径/浏览器名会写入配置与任务元数据，不会保存 Cookie 原文。文件优先于浏览器；创建任务时可覆盖。
+                  </p>
                   <div className="two-col">
                     <label>
                       <span>总结最大输入字符数</span>
@@ -3770,9 +4506,9 @@ function App() {
                     </label>
                   </div>
                   <PathPickerField
-                    label="whisper.cpp 模型文件"
+                    label="主模型文件（最常用，对应「当前使用 → 下面这个主模型文件」）"
                     value={settingsTranscribeModel}
-                    emptyValueLabel="尚未选择 GGML 模型文件"
+                    emptyValueLabel="尚未选择 GGML 模型文件（转写会失败）"
                     selectButtonLabel="选择文件"
                     isSelecting={activeSettingsPathPicker === "transcribe-model"}
                     isDisabled={isBusy || settingsPathSelectionIsActive}
@@ -3788,10 +4524,222 @@ function App() {
                     }
                     onClear={() => setSettingsTranscribeModel("")}
                   />
+                  <p className="muted small">
+                    新手建议：只选一个常用模型（如 small/base），「当前使用」保持「下面这个主模型文件」。保存设置后，对新任务转写生效；已有任务需重跑转写。
+                  </p>
                   <p className="muted small mono">
                     配置文件：{config?.config_path ?? "—"}
                   </p>
                 </div>
+              </article>
+              </div>
+                )}
+
+                {settingsSection === "diagnostics" && (
+              <div
+                id="settings-panel-diagnostics"
+                className="settings-section-panel"
+                role="tabpanel"
+                aria-labelledby="settings-nav-diagnostics"
+              >
+              <article className="card settings-wide">
+                <h2 className="visually-hidden">系统诊断</h2>
+                <p className="muted small">
+                  聚合应用版本、sidecar、模型、磁盘与工作区健康。也可单独扫描工作区并修复可安全项。
+                </p>
+                <div className="detail-actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={isBusy || isLoadingP4Tools}
+                    onClick={() => void handleLoadSystemDiagnostics()}
+                  >
+                    {isLoadingP4Tools ? "诊断中…" : "完整系统诊断"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    disabled={isBusy || isInspectingHealth || isRepairingHealth}
+                    onClick={() => void handleInspectWorkspaceHealth()}
+                  >
+                    {isInspectingHealth ? "扫描中…" : "仅工作区扫描"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    disabled={
+                      isBusy ||
+                      isInspectingHealth ||
+                      isRepairingHealth ||
+                      !workspaceHealth
+                    }
+                    onClick={() => void handleRepairWorkspaceHealth()}
+                  >
+                    {isRepairingHealth ? "修复中…" : "修复可安全项"}
+                  </button>
+                </div>
+                {systemDiagnostics && (
+                  <div className="stat-grid" style={{ marginTop: "1rem" }} aria-label="系统摘要">
+                    <div className="stat-card">
+                      <span className="stat-label">应用版本</span>
+                      <strong>{systemDiagnostics.app_version}</strong>
+                    </div>
+                    <div
+                      className={
+                        systemDiagnostics.dependency.all_required_ready
+                          ? "stat-card ok"
+                          : "stat-card bad"
+                      }
+                    >
+                      <span className="stat-label">必需依赖</span>
+                      <strong>
+                        {systemDiagnostics.dependency.all_required_ready
+                          ? "就绪"
+                          : "缺失"}
+                      </strong>
+                    </div>
+                    <div
+                      className={
+                        systemDiagnostics.models.selected_exists
+                          ? "stat-card ok"
+                          : "stat-card"
+                      }
+                    >
+                      <span className="stat-label">转写模型</span>
+                      <strong>
+                        {systemDiagnostics.models.selected_exists
+                          ? "可用"
+                          : "未就绪"}
+                      </strong>
+                    </div>
+                    <div
+                      className={
+                        systemDiagnostics.disk_below_threshold
+                          ? "stat-card bad"
+                          : "stat-card ok"
+                      }
+                    >
+                      <span className="stat-label">磁盘</span>
+                      <strong>
+                        {systemDiagnostics.free_disk_gb ?? "?"} GB
+                      </strong>
+                    </div>
+                  </div>
+                )}
+                {workspaceHealth ? (
+                  <div className="form-grid" style={{ marginTop: "1rem" }}>
+                    <div className="stat-grid" aria-label="诊断摘要">
+                      <div className="stat-card">
+                        <span className="stat-label">剩余空间 (GB)</span>
+                        <strong>
+                          {workspaceHealth.free_disk_gb ?? "未知"}
+                        </strong>
+                      </div>
+                      <div
+                        className={
+                          workspaceHealth.disk_below_threshold
+                            ? "stat-card bad"
+                            : "stat-card ok"
+                        }
+                      >
+                        <span className="stat-label">磁盘阈值</span>
+                        <strong>
+                          {workspaceHealth.disk_below_threshold
+                            ? "低于阈值"
+                            : "正常"}
+                        </strong>
+                      </div>
+                      <div className="stat-card">
+                        <span className="stat-label">孤儿目录</span>
+                        <strong>
+                          {workspaceHealth.orphan_directories.length}
+                        </strong>
+                      </div>
+                      <div className="stat-card bad">
+                        <span className="stat-label">损坏任务</span>
+                        <strong>{workspaceHealth.corrupt_jobs.length}</strong>
+                      </div>
+                      <div className="stat-card">
+                        <span className="stat-label">中断 running</span>
+                        <strong>
+                          {workspaceHealth.interrupted_running_jobs.length}
+                        </strong>
+                      </div>
+                      <div className="stat-card">
+                        <span className="stat-label">残留 queued</span>
+                        <strong>
+                          {workspaceHealth.stale_queued_jobs.length}
+                        </strong>
+                      </div>
+                      <div className="stat-card">
+                        <span className="stat-label">空媒体索引</span>
+                        <strong>
+                          {workspaceHealth.empty_media_index_jobs.length}
+                        </strong>
+                      </div>
+                    </div>
+                    <p className="muted small mono">
+                      工作区：{workspaceHealth.workspace_dir}
+                      {" · "}
+                      阈值：{workspaceHealth.min_free_disk_gb} GB
+                    </p>
+                    {workspaceHealth.repaired.length > 0 && (
+                      <div>
+                        <div className="theme-section-label">最近修复</div>
+                        <ul className="muted small">
+                          {workspaceHealth.repaired.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {[
+                      {
+                        title: "孤儿目录",
+                        items: workspaceHealth.orphan_directories,
+                      },
+                      {
+                        title: "损坏的 source.json",
+                        items: workspaceHealth.corrupt_jobs,
+                      },
+                      {
+                        title: "中断的 running 任务",
+                        items: workspaceHealth.interrupted_running_jobs,
+                      },
+                      {
+                        title: "残留 queued 任务",
+                        items: workspaceHealth.stale_queued_jobs,
+                      },
+                      {
+                        title: "空媒体索引",
+                        items: workspaceHealth.empty_media_index_jobs,
+                      },
+                    ].map((section) =>
+                      section.items.length > 0 ? (
+                        <div key={section.title}>
+                          <div className="theme-section-label">
+                            {section.title}（{section.items.length}）
+                          </div>
+                          <ul className="muted small">
+                            {section.items.map((finding) => (
+                              <li key={`${finding.job_id_or_name}-${finding.path}`}>
+                                <span className="mono">
+                                  {finding.job_id_or_name}
+                                </span>
+                                {" — "}
+                                {finding.message}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null,
+                    )}
+                  </div>
+                ) : (
+                  <p className="muted small" style={{ marginTop: "1rem" }}>
+                    尚未扫描。点击「开始扫描」生成诊断报告。
+                  </p>
+                )}
               </article>
               </div>
                 )}
@@ -3920,6 +4868,246 @@ function App() {
                       </div>
                     ))}
                 </div>
+              </article>
+
+              <article className="card settings-wide">
+                <div className="log-header">
+                  <div>
+                    <h2>依赖安装向导</h2>
+                    <p className="muted small">
+                      探测必需/可选工具；缺失时给出安装指引。不自动执行系统级安装。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn secondary small"
+                    disabled={isBusy || isLoadingP4Tools}
+                    onClick={() => void handleRefreshDependencyReport()}
+                  >
+                    {isLoadingP4Tools ? "检查中…" : "重新检查依赖"}
+                  </button>
+                </div>
+                {dependencyReport ? (
+                  <div className="dependency-list">
+                    <p
+                      className={
+                        dependencyReport.all_required_ready
+                          ? "muted small"
+                          : "banner error inline"
+                      }
+                    >
+                      {dependencyReport.all_required_ready
+                        ? "必需工具均已就绪"
+                        : `缺少：${dependencyReport.missing_required.join("、")}`}
+                    </p>
+                    {dependencyReport.items.map((item) => (
+                      <div key={item.name} className="dependency-item">
+                        <div className="dependency-item-header">
+                          <strong>
+                            {item.display_name}
+                            {item.required ? "" : "（可选）"}
+                          </strong>
+                          <span
+                            className={`pill source-${item.status.source}`}
+                          >
+                            {item.status.source}
+                          </span>
+                        </div>
+                        <p className="muted small">{item.guidance}</p>
+                        {item.status.source === "missing" ? (
+                          <p className="small">{item.install_hint}</p>
+                        ) : (
+                          <p className="mono muted small">
+                            {item.status.path ?? "—"} ·{" "}
+                            {item.status.version ?? "无版本"}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="muted small">
+                    点击「重新检查依赖」生成向导报告。
+                  </p>
+                )}
+              </article>
+              </div>
+                )}
+
+                {settingsSection === "models" && (
+              <div
+                id="settings-panel-models"
+                className="settings-section-panel"
+                role="tabpanel"
+                aria-labelledby="settings-nav-models"
+              >
+              <article className="card settings-wide">
+                <div className="log-header">
+                  <div>
+                    <h2>转写模型管理</h2>
+                    <p className="muted small">
+                      扫描已配置模型路径所在目录；校验当前选用文件是否存在。不自动下载大体积模型。
+                    </p>
+                  </div>
+                  <div className="detail-actions">
+                    <button
+                      type="button"
+                      className="btn secondary small"
+                      disabled={isBusy || isLoadingP4Tools}
+                      onClick={() => void handleRefreshModelInventory()}
+                    >
+                      扫描模型
+                    </button>
+                    <button
+                      type="button"
+                      className="btn secondary small"
+                      disabled={isBusy || isLoadingP4Tools}
+                      onClick={() => void handleOpenModelDirectory()}
+                    >
+                      打开目录
+                    </button>
+                  </div>
+                </div>
+                {modelInventory ? (
+                  <>
+                    <dl className="meta-list">
+                      <div>
+                        <dt>当前选用</dt>
+                        <dd className="mono">
+                          {modelInventory.selected_path ?? "未配置"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>文件状态</dt>
+                        <dd>
+                          {modelInventory.selected_exists
+                            ? "存在"
+                            : "不存在 / 未配置"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>扫描目录</dt>
+                        <dd className="mono muted small">
+                          {modelInventory.scan_directories.length > 0
+                            ? modelInventory.scan_directories.join("；")
+                            : "无"}
+                        </dd>
+                      </div>
+                    </dl>
+                    <div className="model-file-list">
+                      {modelInventory.models.length === 0 ? (
+                        <p className="muted small">
+                          未发现模型文件。请在「工作区与流水线」中配置
+                          transcribe 模型路径。
+                        </p>
+                      ) : (
+                        modelInventory.models.map((model) => (
+                          <div
+                            key={model.path}
+                            className={
+                              model.is_selected
+                                ? "model-file-row selected"
+                                : "model-file-row"
+                            }
+                          >
+                            <div>
+                              <strong>{model.file_name}</strong>
+                              {model.is_selected && (
+                                <span className="pill">当前</span>
+                              )}
+                              <span className="muted small">
+                                {" "}
+                                {model.kind} ·{" "}
+                                {(model.size_bytes / (1024 * 1024)).toFixed(1)}{" "}
+                                MB
+                              </span>
+                            </div>
+                            <div className="mono muted small">{model.path}</div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p className="muted small">点击「扫描模型」加载清单。</p>
+                )}
+              </article>
+              </div>
+                )}
+
+                {settingsSection === "backup" && (
+              <div
+                id="settings-panel-backup"
+                className="settings-section-panel"
+                role="tabpanel"
+                aria-labelledby="settings-nav-backup"
+              >
+              <article className="card settings-wide">
+                <h2>配置导入 / 导出</h2>
+                <p className="muted small">
+                  导出 Provider、模板、分组、流水线默认与 sidecar 路径等。
+                  <strong>默认剥离 API Key</strong>
+                  ；导入时同 ID 的本地 Key 会保留。
+                </p>
+                <div className="detail-actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={isBusy || isLoadingP4Tools}
+                    onClick={() => void handleExportAppConfig()}
+                  >
+                    导出到剪贴板
+                  </button>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    disabled={isBusy || isLoadingP4Tools}
+                    onClick={() => void handleImportAppConfigFromClipboard()}
+                  >
+                    从剪贴板导入
+                  </button>
+                </div>
+              </article>
+              <article className="card settings-wide">
+                <h2>检查应用更新</h2>
+                <p className="muted small">
+                  比较当前版本与发布页；不自动静默安装。可选环境变量
+                  VIDEO_TOOL_RELEASE_API / VIDEO_TOOL_RELEASE_PAGE。
+                </p>
+                <div className="detail-actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={isBusy || isLoadingP4Tools}
+                    onClick={() => void handleCheckAppUpdate()}
+                  >
+                    检查更新
+                  </button>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    disabled={isBusy}
+                    onClick={() => void handleOpenReleasePage()}
+                  >
+                    打开发布页
+                  </button>
+                </div>
+                {updateCheckResult && (
+                  <div className="form-grid" style={{ marginTop: "0.75rem" }}>
+                    <p className="small">{updateCheckResult.message}</p>
+                    <p className="muted small mono">
+                      当前 {updateCheckResult.current_version}
+                      {updateCheckResult.latest_version
+                        ? ` · 远端 ${updateCheckResult.latest_version}`
+                        : ""}
+                    </p>
+                    {updateCheckResult.release_notes && (
+                      <pre className="artifact-view" style={{ maxHeight: "10rem" }}>
+                        {updateCheckResult.release_notes}
+                      </pre>
+                    )}
+                  </div>
+                )}
               </article>
               </div>
                 )}
@@ -4602,7 +5790,7 @@ function App() {
                 <label>
                   <span>
                     {createMode === "download"
-                      ? "URL / 抖音分享文案"
+                      ? "URL / 多行批量 / 抖音分享文案"
                       : "URL / 流地址"}
                   </span>
                   {createMode === "download" ? (
@@ -4610,8 +5798,10 @@ function App() {
                       ref={downloadUrlInputRef}
                       value={formUrl}
                       onChange={(event) => setFormUrl(event.target.value)}
-                      placeholder="粘贴视频链接，或抖音分享文案（含 v.douyin.com 短链）。最佳努力下载。"
-                      rows={4}
+                      placeholder={
+                        "一行一个链接可批量创建多个任务。\n也可粘贴单条抖音分享文案（含 v.douyin.com 短链）。最佳努力下载。"
+                      }
+                      rows={6}
                     />
                   ) : (
                     <input
@@ -4622,6 +5812,67 @@ function App() {
                     />
                   )}
                 </label>
+              )}
+
+              {createMode === "download" && (
+                <>
+                  <label>
+                    <span>Cookie 辅助（yt-dlp）</span>
+                    <select
+                      value={formCookiesMode}
+                      onChange={(event) => setFormCookiesMode(event.target.value)}
+                    >
+                      <option value="inherit">跟随全局默认</option>
+                      <option value="none">不使用 Cookie</option>
+                      <option value="file">cookies.txt 文件</option>
+                      <option value="browser">从浏览器导入</option>
+                    </select>
+                  </label>
+                  {formCookiesMode === "file" && (
+                    <PathPickerField
+                      label="cookies.txt 路径"
+                      value={formCookiesFile}
+                      emptyValueLabel="请选择 Netscape cookies.txt"
+                      selectButtonLabel="选择文件"
+                      isSelecting={activeSettingsPathPicker === "cookies-file"}
+                      isDisabled={isBusy || settingsPathSelectionIsActive}
+                      onSelect={() =>
+                        void handleSelectSettingsPath({
+                          pickerId: "cookies-file",
+                          title: "选择 Netscape cookies.txt",
+                          currentPath: formCookiesFile,
+                          selectionKind: "file",
+                          filters: [
+                            { name: "Cookies", extensions: ["txt"] },
+                            { name: "所有文件", extensions: ["*"] },
+                          ],
+                          updatePath: setFormCookiesFile,
+                        })
+                      }
+                      onClear={() => setFormCookiesFile("")}
+                    />
+                  )}
+                  {formCookiesMode === "browser" && (
+                    <label>
+                      <span>浏览器</span>
+                      <select
+                        value={formCookiesBrowser}
+                        onChange={(event) =>
+                          setFormCookiesBrowser(event.target.value)
+                        }
+                      >
+                        {COOKIES_BROWSER_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <p className="muted small">
+                    仅作用于 yt-dlp 路径；任务只记录模式/路径/浏览器名，不含 Cookie 原文。
+                  </p>
+                </>
               )}
 
               {createMode === "import" && (
@@ -4718,10 +5969,28 @@ function App() {
                       setAutoSummarize(checked);
                       if (checked) {
                         setAutoTranscribe(true);
+                        if (config?.default_auto_chapterize ?? true) {
+                          setAutoChapterize(true);
+                        }
                       }
                     }}
                   />
                   转写后自动总结
+                </label>
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={autoChapterize}
+                    disabled={autoSummarize && autoChapterize}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setAutoChapterize(checked);
+                      if (checked) {
+                        setAutoTranscribe(true);
+                      }
+                    }}
+                  />
+                  合并后生成章节大纲
                 </label>
                 <label className="checkbox">
                   <input
@@ -4796,25 +6065,55 @@ function App() {
                       </select>
                     </label>
                   </div>
-                  <label>
-                    <span>总结模板</span>
-                    <select
-                      value={formTemplateId}
-                      onChange={(event) => setFormTemplateId(event.target.value)}
-                    >
-                      <option value="">使用全局默认</option>
-                      {config?.templates.map((template) => (
-                        <option key={template.id} value={template.id}>
-                          {template.name}
-                          {template.id === config.default_template_id
-                            ? "（全局默认）"
-                            : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <div className="multi-template-picker">
+                    <span>总结模板（可多选）</span>
+                    <div className="multi-template-list">
+                      {config?.templates.map((template) => {
+                        const checked = formTemplateIds.includes(template.id);
+                        const orderIndex = formTemplateIds.indexOf(template.id);
+                        return (
+                          <label
+                            key={template.id}
+                            className="multi-template-item"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                setFormTemplateIds((previous) => {
+                                  if (previous.includes(template.id)) {
+                                    return previous.filter(
+                                      (id) => id !== template.id,
+                                    );
+                                  }
+                                  return [...previous, template.id];
+                                });
+                                setFormTemplateId((previous) => {
+                                  if (formTemplateIds.includes(template.id)) {
+                                    const next = formTemplateIds.filter(
+                                      (id) => id !== template.id,
+                                    );
+                                    return next[0] ?? "";
+                                  }
+                                  return previous || template.id;
+                                });
+                              }}
+                            />
+                            <span>
+                              {orderIndex >= 0 ? `${orderIndex + 1}. ` : ""}
+                              {template.name}
+                              {template.id === config.default_template_id
+                                ? "（全局默认）"
+                                : ""}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
                   <p className="muted small">
-                    选「使用全局默认」时，任务不写死 Provider；之后改设置里的默认档案再总结会跟新默认。指定档案/模型后会固化到本任务。
+                    不选模板则跟随全局默认；多选时按勾选顺序依次生成，首项为主产物
+                    summary/summary.md。
                   </p>
                 </>
               )}

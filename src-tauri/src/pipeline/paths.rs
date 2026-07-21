@@ -114,14 +114,21 @@ pub fn remove_downstream_artifacts(job_dir: &Path, changed_step: &JobStep) -> Ap
         JobStep::Ingest => {
             remove_directory_contents(&transcript_segments_dir(job_dir))?;
             remove_merged_transcript_artifacts(job_dir)?;
+            remove_chapter_artifacts(job_dir)?;
             remove_summary_artifacts(job_dir)?;
         }
         JobStep::Transcribe => {
             remove_merged_transcript_artifacts(job_dir)?;
+            remove_chapter_artifacts(job_dir)?;
             remove_summary_artifacts(job_dir)?;
         }
         JobStep::MergeTranscript => {
             remove_merged_transcript_artifacts(job_dir)?;
+            remove_chapter_artifacts(job_dir)?;
+            remove_summary_artifacts(job_dir)?;
+        }
+        JobStep::Chapterize => {
+            remove_chapter_artifacts(job_dir)?;
             remove_summary_artifacts(job_dir)?;
         }
         JobStep::Summarize => remove_summary_artifacts(job_dir)?,
@@ -136,11 +143,26 @@ fn remove_merged_transcript_artifacts(job_dir: &Path) -> AppResult<()> {
     Ok(())
 }
 
+fn remove_chapter_artifacts(job_dir: &Path) -> AppResult<()> {
+    for file_name in ["chapters.json", "chapters.md"] {
+        remove_file_if_exists(&transcript_dir(job_dir).join(file_name))?;
+    }
+    Ok(())
+}
+
 fn remove_summary_artifacts(job_dir: &Path) -> AppResult<()> {
     for file_name in ["summary.md", "meta.json"] {
         remove_file_if_exists(&summary_dir(job_dir).join(file_name))?;
     }
+    let by_template_dir = summary_dir(job_dir).join("by_template");
+    if by_template_dir.exists() {
+        fs::remove_dir_all(&by_template_dir)?;
+    }
     Ok(())
+}
+
+pub fn summary_by_template_dir(job_dir: &Path) -> PathBuf {
+    summary_dir(job_dir).join("by_template")
 }
 
 fn remove_directory_contents(directory: &Path) -> AppResult<()> {

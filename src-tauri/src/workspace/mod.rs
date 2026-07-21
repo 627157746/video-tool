@@ -2,6 +2,7 @@ use crate::error::{AppError, AppResult};
 use crate::models::{Job, JobStatus, StepStatus};
 use crate::storage;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -126,29 +127,242 @@ pub fn recover_interrupted_jobs(workspace_root: impl AsRef<Path>) -> AppResult<u
     let workspace_root = workspace_root.as_ref();
     let mut recovered_count = 0;
     for mut job in list_jobs(workspace_root)? {
-        if job.status != JobStatus::Running {
+        match job.status {
+            JobStatus::Running => {
+                let detail =
+                    "应用上次退出时任务仍在运行；后台进程已中断，请重试失败步骤".to_string();
+                job.status = JobStatus::Failed;
+                job.stop_requested = false;
+                job.live_capture_active = false;
+                job.error_message = Some(detail.clone());
+                job.error_code = Some(crate::pipeline::error_code::INTERRUPTED.to_string());
+                for step_progress in &mut job.step_statuses {
+                    if step_progress.status == StepStatus::Running {
+                        step_progress.status = StepStatus::Failed;
+                        step_progress.detail = Some(detail.clone());
+                    }
+                }
+                if let Some(current_step) = job.current_step.take() {
+                    job.set_step_status(&current_step, StepStatus::Failed, Some(detail.clone()));
+                }
+                job.updated_at = chrono::Utc::now();
+                save_job(workspace_root, &job)?;
+                recovered_count += 1;
+            }
+            // In-memory FIFO is gone after restart; never leave permanent "queued".
+            JobStatus::Queued => {
+                job.status = JobStatus::Pending;
+                job.error_message = None;
+                job.error_code = None;
+                job.updated_at = chrono::Utc::now();
+                save_job(workspace_root, &job)?;
+                recovered_count += 1;
+            }
+            _ => {}
+        }
+    }
+    Ok(recovered_count)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthFinding {
+    pub job_id_or_name: String,
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceHealthReport {
+    pub workspace_dir: String,
+    pub free_disk_gb: Option<u64>,
+    pub min_free_disk_gb: u32,
+    pub disk_below_threshold: bool,
+    pub orphan_directories: Vec<HealthFinding>,
+    pub corrupt_jobs: Vec<HealthFinding>,
+    pub interrupted_running_jobs: Vec<HealthFinding>,
+    pub stale_queued_jobs: Vec<HealthFinding>,
+    pub empty_media_index_jobs: Vec<HealthFinding>,
+    pub repaired: Vec<String>,
+}
+
+/// Scan workspace health without mutating jobs (except optional disk probe paths).
+pub fn inspect_workspace_health(
+    workspace_root: impl AsRef<Path>,
+    min_free_disk_gb: u32,
+    active_runner_job_ids: &HashSet<String>,
+) -> AppResult<WorkspaceHealthReport> {
+    use crate::pipeline::paths;
+
+    let workspace_root = workspace_root.as_ref();
+    let paths_layout = WorkspacePaths::from_root(workspace_root);
+    paths_layout.ensure()?;
+
+    let free_disk_gb = paths::free_disk_gb(workspace_root);
+    let disk_below_threshold = free_disk_gb.is_some_and(|free| free < u64::from(min_free_disk_gb));
+
+    let mut orphan_directories = Vec::new();
+    let mut corrupt_jobs = Vec::new();
+    let mut interrupted_running_jobs = Vec::new();
+    let mut stale_queued_jobs = Vec::new();
+    let mut empty_media_index_jobs = Vec::new();
+
+    let read_dir = match fs::read_dir(&paths_layout.jobs) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(WorkspaceHealthReport {
+                workspace_dir: workspace_root.to_string_lossy().replace('\\', "/"),
+                free_disk_gb,
+                min_free_disk_gb,
+                disk_below_threshold,
+                orphan_directories,
+                corrupt_jobs,
+                interrupted_running_jobs,
+                stale_queued_jobs,
+                empty_media_index_jobs,
+                repaired: Vec::new(),
+            });
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    for entry in read_dir {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        let dir_path = entry.path();
+        let path_display = dir_path.to_string_lossy().replace('\\', "/");
+
+        if Uuid::parse_str(&dir_name).is_err() {
+            orphan_directories.push(HealthFinding {
+                job_id_or_name: dir_name,
+                path: path_display,
+                message: "目录名不是有效任务 ID（UUID）".to_string(),
+            });
             continue;
         }
 
-        let detail = "应用上次退出时任务仍在运行；后台进程已中断，请重试失败步骤".to_string();
-        job.status = JobStatus::Failed;
-        job.stop_requested = false;
-        job.live_capture_active = false;
-        job.error_message = Some(detail.clone());
-        for step_progress in &mut job.step_statuses {
-            if step_progress.status == StepStatus::Running {
-                step_progress.status = StepStatus::Failed;
-                step_progress.detail = Some(detail.clone());
+        let source_path = dir_path.join("source.json");
+        if !source_path.exists() {
+            orphan_directories.push(HealthFinding {
+                job_id_or_name: dir_name,
+                path: path_display,
+                message: "缺少 source.json".to_string(),
+            });
+            continue;
+        }
+
+        let raw = match fs::read_to_string(&source_path) {
+            Ok(value) => value,
+            Err(error) => {
+                corrupt_jobs.push(HealthFinding {
+                    job_id_or_name: dir_name,
+                    path: path_display,
+                    message: format!("无法读取 source.json: {error}"),
+                });
+                continue;
             }
+        };
+
+        let job = match serde_json::from_str::<Job>(&raw) {
+            Ok(job) => job,
+            Err(error) => {
+                corrupt_jobs.push(HealthFinding {
+                    job_id_or_name: dir_name,
+                    path: path_display,
+                    message: format!("source.json 解析失败: {error}"),
+                });
+                continue;
+            }
+        };
+
+        if job.status == JobStatus::Running && !active_runner_job_ids.contains(&job.id) {
+            interrupted_running_jobs.push(HealthFinding {
+                job_id_or_name: job.id.clone(),
+                path: path_display.clone(),
+                message: "持久化为 running，但当前无活跃 runner".to_string(),
+            });
         }
-        if let Some(current_step) = job.current_step.take() {
-            job.set_step_status(&current_step, StepStatus::Failed, Some(detail.clone()));
+
+        if job.status == JobStatus::Queued && !active_runner_job_ids.contains(&job.id) {
+            stale_queued_jobs.push(HealthFinding {
+                job_id_or_name: job.id.clone(),
+                path: path_display.clone(),
+                message: "持久化为 queued（进程内队列可能已丢失）".to_string(),
+            });
         }
-        job.updated_at = chrono::Utc::now();
-        save_job(workspace_root, &job)?;
-        recovered_count += 1;
+
+        let media_files_on_disk = paths::list_media_files(&dir_path).unwrap_or_default();
+        if !media_files_on_disk.is_empty() && job.media_segments.is_empty() {
+            empty_media_index_jobs.push(HealthFinding {
+                job_id_or_name: job.id.clone(),
+                path: path_display,
+                message: format!(
+                    "media/ 有 {} 个文件，但 media_segments 索引为空",
+                    media_files_on_disk.len()
+                ),
+            });
+        }
     }
-    Ok(recovered_count)
+
+    Ok(WorkspaceHealthReport {
+        workspace_dir: workspace_root.to_string_lossy().replace('\\', "/"),
+        free_disk_gb,
+        min_free_disk_gb,
+        disk_below_threshold,
+        orphan_directories,
+        corrupt_jobs,
+        interrupted_running_jobs,
+        stale_queued_jobs,
+        empty_media_index_jobs,
+        repaired: Vec::new(),
+    })
+}
+
+/// Repair interrupted running / stale queued jobs and rebuild empty media indexes.
+/// Does **not** delete orphan directories or corrupt JSON (user must handle manually).
+pub fn repair_workspace_health(
+    workspace_root: impl AsRef<Path>,
+    min_free_disk_gb: u32,
+    active_runner_job_ids: &HashSet<String>,
+) -> AppResult<WorkspaceHealthReport> {
+    use crate::pipeline::paths;
+
+    let workspace_root = workspace_root.as_ref();
+    let mut report =
+        inspect_workspace_health(workspace_root, min_free_disk_gb, active_runner_job_ids)?;
+    let mut repaired = Vec::new();
+
+    let recovered = recover_interrupted_jobs(workspace_root)?;
+    if recovered > 0 {
+        repaired.push(format!("已恢复 {recovered} 个 interrupted/queued 状态任务"));
+    }
+
+    for finding in &report.empty_media_index_jobs {
+        let job_id = finding.job_id_or_name.as_str();
+        if active_runner_job_ids.contains(job_id) {
+            continue;
+        }
+        let Ok(mut job) = load_job(workspace_root, job_id) else {
+            continue;
+        };
+        let job_dir = validated_job_dir(workspace_root, job_id)?;
+        if let Ok(media_files) = paths::list_media_files(&job_dir) {
+            if media_files.is_empty() {
+                continue;
+            }
+            job.media_files = media_files;
+            job.rebuild_media_segments_from_files();
+            job.updated_at = chrono::Utc::now();
+            save_job(workspace_root, &job)?;
+            repaired.push(format!("已重建媒体分段索引: {job_id}"));
+        }
+    }
+
+    report = inspect_workspace_health(workspace_root, min_free_disk_gb, active_runner_job_ids)?;
+    report.repaired = repaired;
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -181,6 +395,9 @@ mod tests {
                 title: Some("deletion test".to_string()),
                 local_path: None,
                 segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
             },
             PipelineOptions::default(),
         );
@@ -206,6 +423,9 @@ mod tests {
                 title: None,
                 local_path: None,
                 segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
             },
             PipelineOptions::default(),
         );
@@ -225,6 +445,57 @@ mod tests {
             .error_message
             .as_deref()
             .is_some_and(|message| message.contains("已中断")));
+
+        fs::remove_dir_all(workspace_root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn recovers_queued_jobs_to_pending() {
+        let workspace_root = temporary_workspace("queued-recovery");
+        let mut job = Job::new(
+            JobSource {
+                kind: JobKind::Download,
+                url: Some("https://example.com/video".to_string()),
+                title: None,
+                local_path: None,
+                segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
+            },
+            PipelineOptions::default(),
+        );
+        job.status = JobStatus::Queued;
+        create_job_directories(&workspace_root, &job).expect("create job");
+
+        assert_eq!(
+            recover_interrupted_jobs(&workspace_root).expect("recover"),
+            1
+        );
+        let recovered = load_job(&workspace_root, &job.id).expect("load recovered job");
+        assert_eq!(recovered.status, JobStatus::Pending);
+
+        fs::remove_dir_all(workspace_root).expect("remove test workspace");
+    }
+
+    #[test]
+    fn health_scan_finds_orphan_and_corrupt() {
+        let workspace_root = temporary_workspace("health-scan");
+        let paths = WorkspacePaths::from_root(&workspace_root);
+        paths.ensure().expect("ensure");
+
+        let orphan_dir = paths.jobs.join("not-a-uuid");
+        fs::create_dir_all(&orphan_dir).expect("orphan dir");
+
+        let corrupt_id = Uuid::new_v4().to_string();
+        let corrupt_dir = paths.jobs.join(&corrupt_id);
+        fs::create_dir_all(&corrupt_dir).expect("corrupt dir");
+        fs::write(corrupt_dir.join("source.json"), "{not-json").expect("write corrupt");
+
+        let report =
+            inspect_workspace_health(&workspace_root, 5, &HashSet::new()).expect("inspect");
+        assert_eq!(report.orphan_directories.len(), 1);
+        assert_eq!(report.corrupt_jobs.len(), 1);
 
         fs::remove_dir_all(workspace_root).expect("remove test workspace");
     }

@@ -56,6 +56,56 @@ pub struct SidecarPaths {
     pub transcribe: Option<String>,
 }
 
+/// Global terminology / hotword list for transcription quality (v0.2 P2).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct GlossaryReplacement {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GlossaryConfig {
+    /// Words/phrases preferred during ASR (also used to build whisper `-prompt`).
+    #[serde(default)]
+    pub hotwords: Vec<String>,
+    /// Optional whole-string `from → to` replacements after merge.
+    #[serde(default)]
+    pub replacements: Vec<GlossaryReplacement>,
+    /// When true, pass hotwords (and replacement targets) as whisper initial prompt.
+    #[serde(default = "default_true")]
+    pub apply_as_whisper_prompt: bool,
+    /// When true, apply `replacements` to merged plain text.
+    #[serde(default = "default_true")]
+    pub apply_post_replace: bool,
+}
+
+impl Default for GlossaryConfig {
+    fn default() -> Self {
+        Self {
+            hotwords: Vec::new(),
+            replacements: Vec::new(),
+            apply_as_whisper_prompt: true,
+            apply_post_replace: true,
+        }
+    }
+}
+
+/// Local whisper model path presets (user supplies files on disk).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct TranscribeModelPresets {
+    pub speed: Option<String>,
+    pub balanced: Option<String>,
+    pub quality: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_transcribe_model_preset() -> String {
+    "custom".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub workspace_dir: String,
@@ -69,10 +119,34 @@ pub struct AppConfig {
     pub live_reconnect_attempts: u32,
     #[serde(default = "default_max_context_chars")]
     pub max_context_chars: usize,
+    /// Max jobs running at once; additional accepted work waits as `queued`.
+    #[serde(default = "default_max_concurrent_jobs")]
+    pub max_concurrent_jobs: u32,
+    /// Max concurrent live-record captures (also counts toward max_concurrent_jobs).
+    #[serde(default = "default_max_live_records")]
+    pub max_live_records: u32,
+    /// Default Netscape cookies.txt path for yt-dlp (path only, never contents).
+    #[serde(default)]
+    pub download_cookies_file: Option<String>,
+    /// Default browser for yt-dlp `--cookies-from-browser` when file is unset.
+    #[serde(default)]
+    pub download_cookies_from_browser: Option<String>,
     #[serde(default)]
     pub transcribe_model: Option<String>,
     #[serde(default = "default_transcribe_language")]
     pub transcribe_language: String,
+    /// Active preset key: `speed` | `balanced` | `quality` | `custom`.
+    #[serde(default = "default_transcribe_model_preset")]
+    pub transcribe_model_preset: String,
+    /// Optional model paths for speed / balanced / quality presets.
+    #[serde(default)]
+    pub transcribe_model_presets: TranscribeModelPresets,
+    /// Global glossary (hotwords + replacements). Older configs omit → empty.
+    #[serde(default)]
+    pub glossary: GlossaryConfig,
+    /// When true, auto pipeline runs Chapterize after merge when summarizing.
+    #[serde(default = "default_true")]
+    pub default_auto_chapterize: bool,
     pub sidecar_paths: SidecarPaths,
     pub providers: Vec<ProviderProfile>,
     pub templates: Vec<SummaryTemplate>,
@@ -96,8 +170,16 @@ impl Default for AppConfig {
             min_free_disk_gb: 5,
             live_reconnect_attempts: 3,
             max_context_chars: default_max_context_chars(),
+            max_concurrent_jobs: default_max_concurrent_jobs(),
+            max_live_records: default_max_live_records(),
+            download_cookies_file: None,
+            download_cookies_from_browser: None,
             transcribe_model: None,
             transcribe_language: default_transcribe_language(),
+            transcribe_model_preset: default_transcribe_model_preset(),
+            transcribe_model_presets: TranscribeModelPresets::default(),
+            glossary: GlossaryConfig::default(),
+            default_auto_chapterize: true,
             sidecar_paths: SidecarPaths {
                 ffmpeg: None,
                 ffprobe: None,
@@ -274,6 +356,18 @@ impl AppConfig {
         if let Some(value) = request.max_context_chars {
             candidate.max_context_chars = value;
         }
+        if let Some(value) = request.max_concurrent_jobs {
+            candidate.max_concurrent_jobs = value;
+        }
+        if let Some(value) = request.max_live_records {
+            candidate.max_live_records = value;
+        }
+        if let Some(value) = request.download_cookies_file {
+            candidate.download_cookies_file = empty_to_none(value);
+        }
+        if let Some(value) = request.download_cookies_from_browser {
+            candidate.download_cookies_from_browser = empty_to_none(value);
+        }
         if let Some(value) = request.transcribe_model {
             candidate.transcribe_model = empty_to_none(value);
         }
@@ -284,6 +378,28 @@ impl AppConfig {
                 value.trim().to_string()
             };
         }
+        if let Some(value) = request.transcribe_model_preset {
+            let trimmed = value.trim().to_ascii_lowercase();
+            candidate.transcribe_model_preset = match trimmed.as_str() {
+                "speed" | "balanced" | "quality" | "custom" => trimmed,
+                _ => "custom".to_string(),
+            };
+        }
+        if let Some(presets) = request.transcribe_model_presets {
+            candidate.transcribe_model_presets = TranscribeModelPresets {
+                speed: empty_to_none(presets.speed.unwrap_or_default()),
+                balanced: empty_to_none(presets.balanced.unwrap_or_default()),
+                quality: empty_to_none(presets.quality.unwrap_or_default()),
+            };
+        }
+        if let Some(glossary) = request.glossary {
+            candidate.glossary = normalize_glossary(glossary);
+        }
+        if let Some(value) = request.default_auto_chapterize {
+            candidate.default_auto_chapterize = value;
+        }
+        // When a named preset is active, sync `transcribe_model` from that slot.
+        candidate.apply_transcribe_model_preset();
         if let Some(paths) = request.sidecar_paths {
             candidate.sidecar_paths = paths;
         }
@@ -351,6 +467,18 @@ impl AppConfig {
             return Err(AppError::message(
                 "总结最大输入字符数必须在 1000 到 10000000 之间",
             ));
+        }
+        if !(1..=64).contains(&self.max_concurrent_jobs) {
+            return Err(AppError::message("全局并发任务数必须在 1 到 64 之间"));
+        }
+        if !(1..=16).contains(&self.max_live_records) {
+            return Err(AppError::message("直播并发录制数必须在 1 到 16 之间"));
+        }
+        if self.max_live_records > self.max_concurrent_jobs {
+            return Err(AppError::message("直播并发录制数不能大于全局并发任务数"));
+        }
+        if let Some(browser) = self.download_cookies_from_browser.as_deref() {
+            validate_cookies_browser(browser)?;
         }
         if let Some(proxy_url) = self.proxy_url.as_deref() {
             validate_url(
@@ -612,8 +740,16 @@ impl AppConfig {
             min_free_disk_gb: self.min_free_disk_gb,
             live_reconnect_attempts: self.live_reconnect_attempts,
             max_context_chars: self.max_context_chars,
+            max_concurrent_jobs: self.max_concurrent_jobs,
+            max_live_records: self.max_live_records,
+            download_cookies_file: self.download_cookies_file.clone(),
+            download_cookies_from_browser: self.download_cookies_from_browser.clone(),
             transcribe_model: self.transcribe_model.clone(),
             transcribe_language: self.transcribe_language.clone(),
+            transcribe_model_preset: self.transcribe_model_preset.clone(),
+            transcribe_model_presets: self.transcribe_model_presets.clone(),
+            glossary: self.glossary.clone(),
+            default_auto_chapterize: self.default_auto_chapterize,
             sidecar_paths: self.sidecar_paths.clone(),
             providers: self
                 .providers
@@ -677,8 +813,22 @@ pub struct AppConfigPublic {
     pub min_free_disk_gb: u32,
     pub live_reconnect_attempts: u32,
     pub max_context_chars: usize,
+    pub max_concurrent_jobs: u32,
+    pub max_live_records: u32,
+    #[serde(default)]
+    pub download_cookies_file: Option<String>,
+    #[serde(default)]
+    pub download_cookies_from_browser: Option<String>,
     pub transcribe_model: Option<String>,
     pub transcribe_language: String,
+    #[serde(default = "default_transcribe_model_preset")]
+    pub transcribe_model_preset: String,
+    #[serde(default)]
+    pub transcribe_model_presets: TranscribeModelPresets,
+    #[serde(default)]
+    pub glossary: GlossaryConfig,
+    #[serde(default = "default_true")]
+    pub default_auto_chapterize: bool,
     pub sidecar_paths: SidecarPaths,
     pub providers: Vec<ProviderProfilePublic>,
     pub templates: Vec<SummaryTemplate>,
@@ -687,12 +837,110 @@ pub struct AppConfigPublic {
     pub config_path: String,
 }
 
+impl AppConfig {
+    /// Resolve the model path used by whisper (preset path or custom field).
+    pub fn resolve_transcribe_model_path(&self) -> Option<String> {
+        match self.transcribe_model_preset.as_str() {
+            "speed" => self
+                .transcribe_model_presets
+                .speed
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| self.transcribe_model.clone()),
+            "balanced" => self
+                .transcribe_model_presets
+                .balanced
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| self.transcribe_model.clone()),
+            "quality" => self
+                .transcribe_model_presets
+                .quality
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| self.transcribe_model.clone()),
+            _ => self.transcribe_model.clone(),
+        }
+        .and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.replace('\\', "/"))
+            }
+        })
+    }
+
+    fn apply_transcribe_model_preset(&mut self) {
+        if let Some(resolved) = self.resolve_transcribe_model_path() {
+            // Keep `transcribe_model` as the effective path for older call sites.
+            if self.transcribe_model_preset != "custom" {
+                self.transcribe_model = Some(resolved);
+            }
+        }
+    }
+}
+
+fn normalize_glossary(mut glossary: GlossaryConfig) -> GlossaryConfig {
+    glossary.hotwords = glossary
+        .hotwords
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    glossary.replacements = glossary
+        .replacements
+        .into_iter()
+        .filter_map(|pair| {
+            let from = pair.from.trim().to_string();
+            if from.is_empty() {
+                return None;
+            }
+            Some(GlossaryReplacement {
+                from,
+                to: pair.to.trim().to_string(),
+            })
+        })
+        .collect();
+    glossary
+}
+
 fn default_max_context_chars() -> usize {
     400_000
 }
 
+fn default_max_concurrent_jobs() -> u32 {
+    2
+}
+
+fn default_max_live_records() -> u32 {
+    1
+}
+
 fn default_transcribe_language() -> String {
     "auto".to_string()
+}
+
+/// yt-dlp `--cookies-from-browser` browser id (optional `browser:profile` form).
+pub fn validate_cookies_browser(browser: &str) -> AppResult<()> {
+    let trimmed = browser.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    let browser_name = trimmed
+        .split_once(':')
+        .map(|(name, _)| name)
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase();
+    const ALLOWED: &[&str] = &[
+        "chrome", "chromium", "edge", "firefox", "opera", "brave", "vivaldi", "safari", "whale",
+    ];
+    if !ALLOWED.iter().any(|allowed| *allowed == browser_name) {
+        return Err(AppError::message(format!(
+            "不支持的 cookies 浏览器标识: {trimmed}（可用 chrome / edge / firefox 等）"
+        )));
+    }
+    Ok(())
 }
 
 fn empty_to_none(value: String) -> Option<String> {
@@ -834,8 +1082,16 @@ mod tests {
             min_free_disk_gb: None,
             live_reconnect_attempts: None,
             max_context_chars: None,
+            max_concurrent_jobs: None,
+            max_live_records: None,
+            download_cookies_file: None,
+            download_cookies_from_browser: None,
             transcribe_model: None,
             transcribe_language: None,
+            transcribe_model_preset: None,
+            transcribe_model_presets: None,
+            glossary: None,
+            default_auto_chapterize: None,
             sidecar_paths: None,
             providers: None,
             templates: None,

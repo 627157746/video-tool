@@ -1,5 +1,7 @@
 use super::{douyin, logs};
+use crate::config::{validate_cookies_browser, AppConfig};
 use crate::error::{AppError, AppResult};
+use crate::models::JobSource;
 use crate::sidecar::ResolvedBinary;
 use reqwest::blocking::Client;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, REFERER, USER_AGENT};
@@ -21,12 +23,130 @@ pub struct DownloadResult {
     pub resolved_title: Option<String>,
 }
 
+/// Resolved cookie auth for yt-dlp only (paths/labels, never cookie body).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DownloadCookiesOptions {
+    pub cookies_file: Option<String>,
+    pub cookies_from_browser: Option<String>,
+}
+
+impl DownloadCookiesOptions {
+    pub fn resolve(source: &JobSource, config: &AppConfig) -> AppResult<Self> {
+        let mode = source
+            .download_cookies_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("inherit")
+            .to_ascii_lowercase();
+
+        match mode.as_str() {
+            "none" | "off" | "disable" | "disabled" => Ok(Self::default()),
+            "file" => {
+                let path = source
+                    .download_cookies_file
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| {
+                        config
+                            .download_cookies_file
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                    })
+                    .ok_or_else(|| {
+                        AppError::message("Cookie 模式为文件，但未配置 cookies.txt 路径")
+                    })?;
+                Ok(Self {
+                    cookies_file: Some(path.replace('\\', "/")),
+                    cookies_from_browser: None,
+                })
+            }
+            "browser" => {
+                let browser = source
+                    .download_cookies_from_browser
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| {
+                        config
+                            .download_cookies_from_browser
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                    })
+                    .ok_or_else(|| AppError::message("Cookie 模式为浏览器，但未配置浏览器标识"))?;
+                validate_cookies_browser(browser)?;
+                Ok(Self {
+                    cookies_file: None,
+                    cookies_from_browser: Some(browser.to_string()),
+                })
+            }
+            "inherit" | "" => {
+                // Prefer explicit file over browser when both are configured.
+                if let Some(path) = config
+                    .download_cookies_file
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    return Ok(Self {
+                        cookies_file: Some(path.replace('\\', "/")),
+                        cookies_from_browser: None,
+                    });
+                }
+                if let Some(browser) = config
+                    .download_cookies_from_browser
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    validate_cookies_browser(browser)?;
+                    return Ok(Self {
+                        cookies_file: None,
+                        cookies_from_browser: Some(browser.to_string()),
+                    });
+                }
+                Ok(Self::default())
+            }
+            other => Err(AppError::message(format!(
+                "未知的 Cookie 模式: {other}（可用 inherit / none / file / browser）"
+            ))),
+        }
+    }
+
+    /// CLI fragments for yt-dlp (no binary, no URL). Safe to log.
+    pub fn yt_dlp_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(path) = &self.cookies_file {
+            args.push("--cookies".to_string());
+            args.push(path.clone());
+        } else if let Some(browser) = &self.cookies_from_browser {
+            args.push("--cookies-from-browser".to_string());
+            args.push(browser.clone());
+        }
+        args
+    }
+
+    pub fn describe_for_log(&self) -> String {
+        if let Some(path) = &self.cookies_file {
+            format!("cookies_file={path}")
+        } else if let Some(browser) = &self.cookies_from_browser {
+            format!("cookies_from_browser={browser}")
+        } else {
+            "cookies=none".to_string()
+        }
+    }
+}
+
 /// Best-effort download entry: Douyin share text/links use the share-page
 /// resolver; everything else falls back to yt-dlp.
 pub fn run_download(
     job_dir: &Path,
     raw_input: &str,
     yt_dlp: &ResolvedBinary,
+    cookies: &DownloadCookiesOptions,
     on_progress: Option<DownloadProgressCallback>,
 ) -> AppResult<DownloadResult> {
     if douyin::looks_like_douyin_input(raw_input) {
@@ -41,12 +161,12 @@ pub fn run_download(
                 // Continue to yt-dlp with the extracted short/full URL when possible.
                 let fallback_url = douyin::extract_douyin_url(raw_input)
                     .unwrap_or_else(|| raw_input.trim().to_string());
-                return run_yt_dlp_download(job_dir, &fallback_url, yt_dlp, on_progress);
+                return run_yt_dlp_download(job_dir, &fallback_url, yt_dlp, cookies, on_progress);
             }
         }
     }
 
-    run_yt_dlp_download(job_dir, raw_input.trim(), yt_dlp, on_progress)
+    run_yt_dlp_download(job_dir, raw_input.trim(), yt_dlp, cookies, on_progress)
 }
 
 pub fn run_douyin_download(
@@ -232,6 +352,7 @@ pub fn run_yt_dlp_download(
     job_dir: &Path,
     url: &str,
     yt_dlp: &ResolvedBinary,
+    cookies: &DownloadCookiesOptions,
     on_progress: Option<DownloadProgressCallback>,
 ) -> AppResult<DownloadResult> {
     let binary_path = yt_dlp
@@ -254,8 +375,9 @@ pub fn run_yt_dlp_download(
         job_dir,
         "download",
         &format!(
-            "=== yt-dlp download ===\nurl: {url}\nbinary: {binary_path}\nversion: {}\n",
-            yt_dlp.version.as_deref().unwrap_or("unknown")
+            "=== yt-dlp download ===\nurl: {url}\nbinary: {binary_path}\nversion: {}\n{}\n",
+            yt_dlp.version.as_deref().unwrap_or("unknown"),
+            cookies.describe_for_log()
         ),
     )?;
 
@@ -272,8 +394,9 @@ pub fn run_yt_dlp_download(
             "--progress",
             "-o",
             &output_template,
-            url,
         ])
+        .args(cookies.yt_dlp_args())
+        .arg(url)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -459,4 +582,64 @@ pub fn copy_local_media(job_dir: &Path, local_path: &str) -> AppResult<Vec<Strin
     )?;
 
     Ok(vec![file_name])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{JobKind, JobSource};
+
+    fn sample_source() -> JobSource {
+        JobSource {
+            kind: JobKind::Download,
+            url: Some("https://example.com".into()),
+            title: None,
+            local_path: None,
+            segment_minutes: None,
+            download_cookies_mode: None,
+            download_cookies_file: None,
+            download_cookies_from_browser: None,
+        }
+    }
+
+    #[test]
+    fn cookie_args_prefer_file_over_browser_when_inheriting() {
+        let config = AppConfig {
+            download_cookies_file: Some(r"C:\cookies\net.txt".into()),
+            download_cookies_from_browser: Some("chrome".into()),
+            ..AppConfig::default()
+        };
+        let source = sample_source();
+        let options = DownloadCookiesOptions::resolve(&source, &config).expect("resolve");
+        assert_eq!(
+            options.yt_dlp_args(),
+            vec!["--cookies".to_string(), "C:/cookies/net.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn cookie_mode_none_disables_global_cookies() {
+        let config = AppConfig {
+            download_cookies_from_browser: Some("edge".into()),
+            ..AppConfig::default()
+        };
+        let mut source = sample_source();
+        source.download_cookies_mode = Some("none".into());
+        let options = DownloadCookiesOptions::resolve(&source, &config).expect("resolve");
+        assert!(options.yt_dlp_args().is_empty());
+        assert_eq!(options.describe_for_log(), "cookies=none");
+    }
+
+    #[test]
+    fn cookie_mode_browser_builds_from_browser_arg() {
+        let config = AppConfig::default();
+        let mut source = sample_source();
+        source.download_cookies_mode = Some("browser".into());
+        source.download_cookies_from_browser = Some("firefox".into());
+        let options = DownloadCookiesOptions::resolve(&source, &config).expect("resolve");
+        assert_eq!(
+            options.yt_dlp_args(),
+            vec!["--cookies-from-browser".to_string(), "firefox".to_string()]
+        );
+    }
 }

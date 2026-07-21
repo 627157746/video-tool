@@ -53,12 +53,29 @@ progress. UI or backend changes must not silently reinterpret it.
 
 ## Runner Contract
 
-`pipeline::runner::RunnerState` provides same-Job exclusion. Different Jobs can
-run concurrently on detached Rust threads; there is no queue or global
-concurrency limit. Describe this accurately when adding scheduling behavior.
+`pipeline::runner::RunnerState` provides:
 
-Starting a background command means the run was accepted, not completed. The
-runner persists state and emits `job-updated` as work progresses.
+1. Same-Job exclusion (`running_job_ids`).
+2. A global FIFO wait queue for work that cannot start yet.
+3. Concurrency limits from config: `max_concurrent_jobs` (default 2) and
+   `max_live_records` (default 1). Live-record full-run / ingest work also
+   claims a live slot for the whole run (`live_slot_holders`).
+
+When no free slot exists, the scheduler sets `JobStatus::Queued`, persists,
+emits `job-updated`, and enqueues FIFO. On each job end, `pump_queue` starts
+as many runnable queued jobs as slots allow. Create, run, step retry, and
+segment retry all enter this path.
+
+`Queued` is scheduler-owned; `Job::derived_status()` never invents it. On app
+startup, `recover_interrupted_jobs` maps stale `Running` → `Failed` and
+`Queued` → `Pending` (in-memory queue is not durable).
+
+List items may include 1-based `queue_position` when status is queued and the
+job is present in the in-memory queue.
+
+Starting a background command means the run was **accepted** (running or
+queued), not completed. The runner persists state and emits `job-updated` as
+work progresses.
 
 Use a cloned config snapshot for a run so Provider, sidecar, and workspace
 settings do not change halfway through a step. Workspace switching must remain
