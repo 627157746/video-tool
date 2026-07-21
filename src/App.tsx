@@ -56,6 +56,12 @@ import "./App.css";
 
 type CreateMode = "download" | "live" | "import" | null;
 type MainView = "jobs" | "settings";
+type SettingsSection =
+  | "appearance"
+  | "pipeline"
+  | "providers"
+  | "templates"
+  | "sidecars";
 type SettingsPathPickerId =
   | "workspace"
   | "transcribe-model"
@@ -70,6 +76,38 @@ type LogName =
   | "transcribe"
   | "merge_transcript"
   | "summarize";
+
+const SETTINGS_SECTIONS: ReadonlyArray<{
+  id: SettingsSection;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: "appearance",
+    label: "外观与主题",
+    description: "深浅色模式与强调色，仅影响本机界面。",
+  },
+  {
+    id: "pipeline",
+    label: "工作区与流水线",
+    description: "工作区、默认 Provider/模板、转写与磁盘保护等全局默认。",
+  },
+  {
+    id: "providers",
+    label: "Provider 档案",
+    description: "管理 AI 接口档案；左侧列表选择，右侧编辑详情。",
+  },
+  {
+    id: "templates",
+    label: "总结模板",
+    description: "管理总结提示词模板；左侧列表选择，右侧编辑内容。",
+  },
+  {
+    id: "sidecars",
+    label: "Sidecar 工具",
+    description: "可选覆盖可执行路径，并查看当前解析结果。解析顺序：内置 → 配置路径 → PATH。",
+  },
+];
 
 /** whisper.cpp `-l` codes; `auto` means omit `-l` and let whisper detect. */
 const TRANSCRIBE_LANGUAGE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
@@ -430,6 +468,10 @@ function App() {
   const [settingsTranscribe, setSettingsTranscribe] = useState("");
   const [providerDrafts, setProviderDrafts] = useState<ProviderProfileInput[]>([]);
   const [templateDrafts, setTemplateDrafts] = useState<SummaryTemplate[]>([]);
+  const [selectedProviderIndex, setSelectedProviderIndex] = useState(0);
+  const [selectedTemplateIndex, setSelectedTemplateIndex] = useState(0);
+  const [settingsSection, setSettingsSection] =
+    useState<SettingsSection>("pipeline");
   const [themePreferences, setThemePreferences] = useState<ThemePreferences>(() =>
     loadThemePreferences(),
   );
@@ -488,7 +530,7 @@ function App() {
     setSettingsFfprobe(nextConfig.sidecar_paths.ffprobe ?? "");
     setSettingsStreamlink(nextConfig.sidecar_paths.streamlink ?? "");
     setSettingsTranscribe(nextConfig.sidecar_paths.transcribe ?? "");
-    setProviderDrafts(nextConfig.providers.map((provider) => {
+    const nextProviderDrafts = nextConfig.providers.map((provider) => {
       const normalizedModels = normalizeProviderModels(
         provider.models ?? [],
         provider.default_model,
@@ -504,8 +546,32 @@ function App() {
         models: normalizedModels.models,
         extra_headers: provider.extra_headers,
       };
-    }));
+    });
+    setProviderDrafts(nextProviderDrafts);
+    setSelectedProviderIndex((currentIndex) => {
+      const previousProviderId =
+        providerDraftsRef.current[currentIndex]?.id ??
+        nextProviderDrafts[currentIndex]?.id;
+      if (previousProviderId) {
+        const matchedIndex = nextProviderDrafts.findIndex(
+          (provider) => provider.id === previousProviderId,
+        );
+        if (matchedIndex >= 0) {
+          return matchedIndex;
+        }
+      }
+      return nextProviderDrafts.length > 0
+        ? Math.min(currentIndex, nextProviderDrafts.length - 1)
+        : 0;
+    });
     setTemplateDrafts(nextConfig.templates);
+    setSelectedTemplateIndex((currentIndex) => {
+      const nextTemplates = nextConfig.templates;
+      if (nextTemplates.length === 0) {
+        return 0;
+      }
+      return Math.min(currentIndex, nextTemplates.length - 1);
+    });
     setFormSegmentMinutes(nextConfig.default_segment_minutes);
     setAutoTranscribe(nextConfig.default_auto_transcribe);
     setAutoSummarize(nextConfig.default_auto_summarize);
@@ -859,6 +925,34 @@ function App() {
       JSON.stringify(persistedProfiles) !== JSON.stringify(draftProfiles)
     );
   }, [config, providerDrafts, settingsProxy]);
+
+  const selectedProviderDraft = useMemo(() => {
+    if (providerDrafts.length === 0) {
+      return null;
+    }
+    const clampedIndex = Math.min(
+      Math.max(selectedProviderIndex, 0),
+      providerDrafts.length - 1,
+    );
+    return {
+      index: clampedIndex,
+      provider: providerDrafts[clampedIndex],
+    };
+  }, [providerDrafts, selectedProviderIndex]);
+
+  const selectedTemplateDraft = useMemo(() => {
+    if (templateDrafts.length === 0) {
+      return null;
+    }
+    const clampedIndex = Math.min(
+      Math.max(selectedTemplateIndex, 0),
+      templateDrafts.length - 1,
+    );
+    return {
+      index: clampedIndex,
+      template: templateDrafts[clampedIndex],
+    };
+  }, [templateDrafts, selectedTemplateIndex]);
 
   const selectedCreateProvider = useMemo(() => {
     if (!config) {
@@ -1496,12 +1590,57 @@ function App() {
       (_, currentIndex) => currentIndex !== providerIndex,
     );
     setProviderDrafts(remainingProviders);
+    setSelectedProviderIndex((currentIndex) => {
+      if (remainingProviders.length === 0) {
+        return 0;
+      }
+      if (currentIndex > providerIndex) {
+        return currentIndex - 1;
+      }
+      if (currentIndex >= remainingProviders.length) {
+        return remainingProviders.length - 1;
+      }
+      return currentIndex;
+    });
     setSettingsDefaultProviderId((currentDefaultId) =>
       resolveExistingDefaultId(
         currentDefaultId,
         remainingProviders.map((provider) => provider.id),
       ),
     );
+  }
+
+  function handleAddProvider() {
+    const nextProviderIndex = providerDrafts.length;
+    setProviderDrafts((items) => [
+      ...items,
+      {
+        id: `provider-${items.length + 1}`,
+        name: "新 Provider",
+        protocol: "openai",
+        base_url: "https://api.openai.com/v1",
+        api_key: null,
+        api_key_env: "OPENAI_API_KEY",
+        default_model: "gpt-4o-mini",
+        models: ["gpt-4o-mini", "gpt-4o"],
+        extra_headers: [],
+      },
+    ]);
+    setSelectedProviderIndex(nextProviderIndex);
+  }
+
+  function handleAddTemplate() {
+    const nextTemplateIndex = templateDrafts.length;
+    setTemplateDrafts((items) => [
+      ...items,
+      {
+        id: `template-${items.length + 1}`,
+        name: "新模板",
+        system_prompt: "你是一个严谨的中文内容助理。",
+        user_template: "请总结以下内容：\n\n{{transcript}}",
+      },
+    ]);
+    setSelectedTemplateIndex(nextTemplateIndex);
   }
 
   function handleTemplateIdChange(
@@ -1526,6 +1665,18 @@ function App() {
       (_, currentIndex) => currentIndex !== templateIndex,
     );
     setTemplateDrafts(remainingTemplates);
+    setSelectedTemplateIndex((currentIndex) => {
+      if (remainingTemplates.length === 0) {
+        return 0;
+      }
+      if (currentIndex > templateIndex) {
+        return currentIndex - 1;
+      }
+      if (currentIndex >= remainingTemplates.length) {
+        return remainingTemplates.length - 1;
+      }
+      return currentIndex;
+    });
     setSettingsDefaultTemplateId((currentDefaultId) =>
       resolveExistingDefaultId(
         currentDefaultId,
@@ -1608,6 +1759,47 @@ function App() {
     void reloadLog(jobId, nextLogName);
     return true;
   }
+
+  function handleSettingsSectionNavigation(
+    currentSection: SettingsSection,
+    pressedKey: string,
+  ): boolean {
+    const currentIndex = SETTINGS_SECTIONS.findIndex(
+      (section) => section.id === currentSection,
+    );
+    if (currentIndex < 0) {
+      return false;
+    }
+    let nextIndex: number;
+    switch (pressedKey) {
+      case "ArrowUp":
+      case "ArrowLeft":
+        nextIndex =
+          (currentIndex - 1 + SETTINGS_SECTIONS.length) %
+          SETTINGS_SECTIONS.length;
+        break;
+      case "ArrowDown":
+      case "ArrowRight":
+        nextIndex = (currentIndex + 1) % SETTINGS_SECTIONS.length;
+        break;
+      case "Home":
+        nextIndex = 0;
+        break;
+      case "End":
+        nextIndex = SETTINGS_SECTIONS.length - 1;
+        break;
+      default:
+        return false;
+    }
+    const nextSection = SETTINGS_SECTIONS[nextIndex];
+    setSettingsSection(nextSection.id);
+    document.getElementById(`settings-nav-${nextSection.id}`)?.focus();
+    return true;
+  }
+
+  const activeSettingsSectionMeta =
+    SETTINGS_SECTIONS.find((section) => section.id === settingsSection) ??
+    SETTINGS_SECTIONS[0];
 
   const settingsPathSelectionIsActive = activeSettingsPathPicker !== null;
 
@@ -2273,18 +2465,20 @@ function App() {
               <div>
                 <h1>设置</h1>
                 <p className="muted">
-                  工作区与 API Key 分离存放。Sidecar 解析顺序：内置 → 配置路径 → PATH。
+                  工作区与 API Key 分离存放。按左侧分区管理，修改后点右上角保存。
                 </p>
               </div>
               <div className="detail-actions">
-                <button
-                  className="btn secondary"
-                  type="button"
-                  disabled={isBusy}
-                  onClick={() => void handleCheckYtDlp()}
-                >
-                  检查并更新 yt-dlp
-                </button>
+                {settingsSection === "sidecars" && (
+                  <button
+                    className="btn secondary"
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() => void handleCheckYtDlp()}
+                  >
+                    检查并更新 yt-dlp
+                  </button>
+                )}
                 <button
                   className="btn"
                   type="button"
@@ -2296,9 +2490,79 @@ function App() {
               </div>
             </div>
 
-            <div className="cards">
+            <div className="settings-layout">
+              <nav
+                className="settings-nav"
+                role="tablist"
+                aria-label="设置分区"
+                aria-orientation="vertical"
+              >
+                {SETTINGS_SECTIONS.map((section) => {
+                  const isActive = settingsSection === section.id;
+                  const sectionCountLabel =
+                    section.id === "providers"
+                      ? String(providerDrafts.length)
+                      : section.id === "templates"
+                        ? String(templateDrafts.length)
+                        : null;
+                  return (
+                    <button
+                      key={section.id}
+                      id={`settings-nav-${section.id}`}
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      aria-controls={`settings-panel-${section.id}`}
+                      tabIndex={isActive ? 0 : -1}
+                      className={
+                        isActive
+                          ? "settings-nav-item active"
+                          : "settings-nav-item"
+                      }
+                      onClick={() => setSettingsSection(section.id)}
+                      onKeyDown={(event) => {
+                        if (
+                          handleSettingsSectionNavigation(
+                            settingsSection,
+                            event.key,
+                          )
+                        ) {
+                          event.preventDefault();
+                        }
+                      }}
+                    >
+                      <span className="settings-nav-item-label">
+                        {section.label}
+                      </span>
+                      {sectionCountLabel != null && (
+                        <span className="settings-nav-count">
+                          {sectionCountLabel}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </nav>
+
+              <div className="settings-main">
+                <div className="settings-section-intro">
+                  <h2 id={`settings-panel-title-${settingsSection}`}>
+                    {activeSettingsSectionMeta.label}
+                  </h2>
+                  <p className="muted small">
+                    {activeSettingsSectionMeta.description}
+                  </p>
+                </div>
+
+                {settingsSection === "appearance" && (
+              <div
+                id="settings-panel-appearance"
+                className="settings-section-panel"
+                role="tabpanel"
+                aria-labelledby="settings-nav-appearance"
+              >
               <article className="card settings-wide theme-card">
-                <h2>外观与主题</h2>
+                <h2 className="visually-hidden">外观与主题</h2>
                 <div>
                   <div className="theme-section-label">深浅色模式</div>
                   <div className="theme-mode-options" role="group" aria-label="深浅色模式">
@@ -2351,9 +2615,18 @@ function App() {
                   </div>
                 </div>
               </article>
+              </div>
+                )}
 
-              <article className="card">
-                <h2>工作区与默认流水线</h2>
+                {settingsSection === "pipeline" && (
+              <div
+                id="settings-panel-pipeline"
+                className="settings-section-panel"
+                role="tabpanel"
+                aria-labelledby="settings-nav-pipeline"
+              >
+              <article className="card settings-wide">
+                <h2 className="visually-hidden">工作区与默认流水线</h2>
                 <div className="form-grid">
                   <PathPickerField
                     label="工作区路径"
@@ -2519,8 +2792,17 @@ function App() {
                   </p>
                 </div>
               </article>
+              </div>
+                )}
 
-              <article className="card">
+                {settingsSection === "sidecars" && (
+              <div
+                id="settings-panel-sidecars"
+                className="settings-section-panel"
+                role="tabpanel"
+                aria-labelledby="settings-nav-sidecars"
+              >
+              <article className="card settings-wide">
                 <h2>Sidecar 路径（可选覆盖）</h2>
                 <div className="form-grid">
                   <PathPickerField
@@ -2638,120 +2920,507 @@ function App() {
                     ))}
                 </div>
               </article>
+              </div>
+                )}
 
+                {settingsSection === "providers" && (
+              <div
+                id="settings-panel-providers"
+                className="settings-section-panel"
+                role="tabpanel"
+                aria-labelledby="settings-nav-providers"
+              >
               <article className="card settings-wide">
                 <div className="log-header">
-                  <h2>Provider 档案</h2>
+                  <div>
+                    <h2 className="visually-hidden">Provider 档案</h2>
+                    <p className="muted small settings-collection-hint">
+                      共 {providerDrafts.length} 个档案
+                    </p>
+                  </div>
                   <button
                     type="button"
                     className="btn secondary small"
-                    onClick={() => setProviderDrafts((items) => [...items, {
-                      id: `provider-${items.length + 1}`,
-                      name: "新 Provider",
-                      protocol: "openai",
-                      base_url: "https://api.openai.com/v1",
-                      api_key: null,
-                      api_key_env: "OPENAI_API_KEY",
-                      default_model: "gpt-4o-mini",
-                      models: ["gpt-4o-mini", "gpt-4o"],
-                      extra_headers: [],
-                    }])}
+                    onClick={handleAddProvider}
                   >
                     添加档案
                   </button>
                 </div>
-                <div className="profile-list">
-                  {providerDrafts.map((provider, index) => (
-                    <div className="profile-editor" key={`${provider.id}-${index}`}>
-                      <div className="two-col">
-                        <label><span>ID</span><input value={provider.id} onChange={(event) => handleProviderIdChange(index, provider.id, event.target.value)} /></label>
-                        <label><span>名称</span><input value={provider.name} onChange={(event) => updateProviderDraft(index, (item) => ({...item, name: event.target.value}))} /></label>
+                <div className="settings-split">
+                  <div
+                    className="settings-item-list"
+                    role="listbox"
+                    aria-label="Provider 档案列表"
+                  >
+                    {providerDrafts.length === 0 ? (
+                      <div className="settings-item-empty muted">
+                        还没有 Provider，点击「添加档案」开始配置。
                       </div>
-                      <div className="two-col">
-                        <label><span>协议</span><select value={provider.protocol} onChange={(event) => updateProviderDraft(index, (item) => ({...item, protocol: event.target.value as "openai" | "anthropic"}))}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
-                        <label>
-                          <span>默认模型</span>
-                          {provider.models.length > 0 ? (
-                            <select
-                              value={
-                                provider.models.includes(provider.default_model)
-                                  ? provider.default_model
-                                  : provider.models[0]
-                              }
+                    ) : (
+                      providerDrafts.map((provider, index) => {
+                        const isSelected =
+                          selectedProviderDraft?.index === index;
+                        const isDefault =
+                          provider.id === settingsDefaultProviderId;
+                        const protocolLabel =
+                          provider.protocol === "anthropic"
+                            ? "Anthropic"
+                            : "OpenAI";
+                        return (
+                          <button
+                            key={`${provider.id}-${index}`}
+                            type="button"
+                            role="option"
+                            aria-selected={isSelected}
+                            className={
+                              isSelected
+                                ? "settings-item selected"
+                                : "settings-item"
+                            }
+                            onClick={() => setSelectedProviderIndex(index)}
+                          >
+                            <div className="settings-item-top">
+                              <strong>
+                                {provider.name.trim() || "未命名 Provider"}
+                              </strong>
+                              {isDefault && (
+                                <span className="settings-item-badge">默认</span>
+                              )}
+                            </div>
+                            <div className="settings-item-meta muted small">
+                              <span>{protocolLabel}</span>
+                              <span className="mono">
+                                {provider.default_model.trim() || "未设模型"}
+                              </span>
+                            </div>
+                            <div
+                              className="settings-item-sub muted small mono"
+                              title={provider.id}
+                            >
+                              {provider.id.trim() || "未设 ID"}
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                  <div className="settings-item-detail">
+                    {selectedProviderDraft ? (
+                      <div className="profile-editor settings-detail-editor">
+                        <div className="settings-detail-title">
+                          <strong>
+                            {selectedProviderDraft.provider.name.trim() ||
+                              "未命名 Provider"}
+                          </strong>
+                          <span className="muted small mono">
+                            {selectedProviderDraft.provider.id.trim() ||
+                              "未设 ID"}
+                          </span>
+                        </div>
+                        <div className="two-col">
+                          <label>
+                            <span>ID</span>
+                            <input
+                              value={selectedProviderDraft.provider.id}
                               onChange={(event) =>
-                                handleProviderDefaultModelChange(index, event.target.value)
+                                handleProviderIdChange(
+                                  selectedProviderDraft.index,
+                                  selectedProviderDraft.provider.id,
+                                  event.target.value,
+                                )
+                              }
+                            />
+                          </label>
+                          <label>
+                            <span>名称</span>
+                            <input
+                              value={selectedProviderDraft.provider.name}
+                              onChange={(event) =>
+                                updateProviderDraft(
+                                  selectedProviderDraft.index,
+                                  (item) => ({
+                                    ...item,
+                                    name: event.target.value,
+                                  }),
+                                )
+                              }
+                            />
+                          </label>
+                        </div>
+                        <div className="two-col">
+                          <label>
+                            <span>协议</span>
+                            <select
+                              value={selectedProviderDraft.provider.protocol}
+                              onChange={(event) =>
+                                updateProviderDraft(
+                                  selectedProviderDraft.index,
+                                  (item) => ({
+                                    ...item,
+                                    protocol: event.target.value as
+                                      | "openai"
+                                      | "anthropic",
+                                  }),
+                                )
                               }
                             >
-                              {provider.models.map((modelName) => (
-                                <option key={modelName} value={modelName}>
-                                  {modelName}
-                                </option>
-                              ))}
+                              <option value="openai">OpenAI</option>
+                              <option value="anthropic">Anthropic</option>
                             </select>
-                          ) : (
-                            <input
-                              value={provider.default_model}
-                              onChange={(event) =>
-                                handleProviderDefaultModelChange(index, event.target.value)
-                              }
-                              placeholder="gpt-4o-mini"
-                            />
-                          )}
+                          </label>
+                          <label>
+                            <span>默认模型</span>
+                            {selectedProviderDraft.provider.models.length >
+                            0 ? (
+                              <select
+                                value={
+                                  selectedProviderDraft.provider.models.includes(
+                                    selectedProviderDraft.provider.default_model,
+                                  )
+                                    ? selectedProviderDraft.provider
+                                        .default_model
+                                    : selectedProviderDraft.provider.models[0]
+                                }
+                                onChange={(event) =>
+                                  handleProviderDefaultModelChange(
+                                    selectedProviderDraft.index,
+                                    event.target.value,
+                                  )
+                                }
+                              >
+                                {selectedProviderDraft.provider.models.map(
+                                  (modelName) => (
+                                    <option key={modelName} value={modelName}>
+                                      {modelName}
+                                    </option>
+                                  ),
+                                )}
+                              </select>
+                            ) : (
+                              <input
+                                value={
+                                  selectedProviderDraft.provider.default_model
+                                }
+                                onChange={(event) =>
+                                  handleProviderDefaultModelChange(
+                                    selectedProviderDraft.index,
+                                    event.target.value,
+                                  )
+                                }
+                                placeholder="gpt-4o-mini"
+                              />
+                            )}
+                          </label>
+                        </div>
+                        <label>
+                          <span>可用模型（每行一个，或用逗号分隔）</span>
+                          <textarea
+                            rows={4}
+                            value={providerModelsListText(
+                              selectedProviderDraft.provider.models,
+                            )}
+                            onChange={(event) =>
+                              handleProviderModelsTextChange(
+                                selectedProviderDraft.index,
+                                event.target.value,
+                              )
+                            }
+                            placeholder={"gpt-4o-mini\ngpt-4o\no3-mini"}
+                          />
                         </label>
+                        <div className="muted small">
+                          同一 Provider 共用 Base URL 与 API Key；创建任务时可在模型列表中切换。
+                        </div>
+                        <label>
+                          <span>Base URL</span>
+                          <input
+                            value={selectedProviderDraft.provider.base_url}
+                            onChange={(event) =>
+                              updateProviderDraft(
+                                selectedProviderDraft.index,
+                                (item) => ({
+                                  ...item,
+                                  base_url: event.target.value,
+                                }),
+                              )
+                            }
+                          />
+                        </label>
+                        <div className="two-col">
+                          <label>
+                            <span>API Key 环境变量</span>
+                            <input
+                              value={
+                                selectedProviderDraft.provider.api_key_env ?? ""
+                              }
+                              onChange={(event) =>
+                                updateProviderDraft(
+                                  selectedProviderDraft.index,
+                                  (item) => ({
+                                    ...item,
+                                    api_key_env: event.target.value || null,
+                                  }),
+                                )
+                              }
+                            />
+                          </label>
+                          <label>
+                            <span>API Key（留空保留原值）</span>
+                            <input
+                              type="password"
+                              value={
+                                selectedProviderDraft.provider.api_key ?? ""
+                              }
+                              onChange={(event) =>
+                                updateProviderDraft(
+                                  selectedProviderDraft.index,
+                                  (item) => ({
+                                    ...item,
+                                    api_key: event.target.value || null,
+                                  }),
+                                )
+                              }
+                            />
+                          </label>
+                        </div>
+                        <div className="detail-actions">
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            disabled={isBusy || providerDraftsAreDirty}
+                            title={
+                              providerDraftsAreDirty
+                                ? "请先保存 Provider 修改"
+                                : undefined
+                            }
+                            onClick={() =>
+                              void handleTestProvider(
+                                selectedProviderDraft.provider.id,
+                              )
+                            }
+                          >
+                            测试连通
+                          </button>
+                          {providerDrafts.length > 1 && (
+                            <button
+                              type="button"
+                              className="btn danger small"
+                              onClick={() =>
+                                handleDeleteProvider(selectedProviderDraft.index)
+                              }
+                            >
+                              删除
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <label>
-                        <span>可用模型（每行一个，或用逗号分隔）</span>
-                        <textarea
-                          rows={4}
-                          value={providerModelsListText(provider.models)}
-                          onChange={(event) =>
-                            handleProviderModelsTextChange(index, event.target.value)
-                          }
-                          placeholder={"gpt-4o-mini\ngpt-4o\no3-mini"}
-                        />
-                      </label>
-                      <div className="muted small">
-                        同一 Provider 共用 Base URL 与 API Key；创建任务时可在模型列表中切换。
+                    ) : (
+                      <div className="settings-item-empty muted">
+                        选择或添加一个 Provider 档案以开始编辑。
                       </div>
-                      <label><span>Base URL</span><input value={provider.base_url} onChange={(event) => updateProviderDraft(index, (item) => ({...item, base_url: event.target.value}))} /></label>
-                      <div className="two-col">
-                        <label><span>API Key 环境变量</span><input value={provider.api_key_env ?? ""} onChange={(event) => updateProviderDraft(index, (item) => ({...item, api_key_env: event.target.value || null}))} /></label>
-                        <label><span>API Key（留空保留原值）</span><input type="password" value={provider.api_key ?? ""} onChange={(event) => updateProviderDraft(index, (item) => ({...item, api_key: event.target.value || null}))} /></label>
-                      </div>
-                      <div className="detail-actions">
-                        <button
-                          type="button"
-                          className="btn secondary small"
-                          disabled={isBusy || providerDraftsAreDirty}
-                          title={providerDraftsAreDirty ? "请先保存 Provider 修改" : undefined}
-                          onClick={() => void handleTestProvider(provider.id)}
-                        >
-                          测试连通
-                        </button>
-                        {providerDrafts.length > 1 && <button type="button" className="btn danger small" onClick={() => handleDeleteProvider(index)}>删除</button>}
-                      </div>
-                    </div>
-                  ))}
+                    )}
+                  </div>
                 </div>
               </article>
+              </div>
+                )}
 
+                {settingsSection === "templates" && (
+              <div
+                id="settings-panel-templates"
+                className="settings-section-panel"
+                role="tabpanel"
+                aria-labelledby="settings-nav-templates"
+              >
               <article className="card settings-wide">
-                <div className="log-header"><h2>总结模板</h2><button type="button" className="btn secondary small" onClick={() => setTemplateDrafts((items) => [...items, {id: `template-${items.length + 1}`, name: "新模板", system_prompt: "你是一个严谨的中文内容助理。", user_template: "请总结以下内容：\n\n{{transcript}}"}])}>添加模板</button></div>
-                <div className="profile-list">
-                  {templateDrafts.map((template, index) => (
-                    <div className="profile-editor" key={`${template.id}-${index}`}>
-                      <div className="two-col">
-                        <label><span>ID</span><input value={template.id} onChange={(event) => handleTemplateIdChange(index, template.id, event.target.value)} /></label>
-                        <label><span>名称</span><input value={template.name} onChange={(event) => setTemplateDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, name: event.target.value} : item))} /></label>
+                <div className="log-header">
+                  <div>
+                    <h2 className="visually-hidden">总结模板</h2>
+                    <p className="muted small settings-collection-hint">
+                      共 {templateDrafts.length} 个模板
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn secondary small"
+                    onClick={handleAddTemplate}
+                  >
+                    添加模板
+                  </button>
+                </div>
+                <div className="settings-split">
+                  <div
+                    className="settings-item-list"
+                    role="listbox"
+                    aria-label="总结模板列表"
+                  >
+                    {templateDrafts.length === 0 ? (
+                      <div className="settings-item-empty muted">
+                        还没有模板，点击「添加模板」开始配置。
                       </div>
-                      <label><span>System Prompt</span><textarea value={template.system_prompt} onChange={(event) => setTemplateDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, system_prompt: event.target.value} : item))} /></label>
-                      <label><span>用户模板</span><textarea rows={6} value={template.user_template} onChange={(event) => setTemplateDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, user_template: event.target.value} : item))} /></label>
-                      <div className="muted small">变量：{`{{title}} {{source_url}} {{duration}} {{transcript}}`}</div>
-                      {templateDrafts.length > 1 && <button type="button" className="btn danger small" onClick={() => handleDeleteTemplate(index)}>删除模板</button>}
-                    </div>
-                  ))}
+                    ) : (
+                      templateDrafts.map((template, index) => {
+                        const isSelected =
+                          selectedTemplateDraft?.index === index;
+                        const isDefault =
+                          template.id === settingsDefaultTemplateId;
+                        const promptPreview =
+                          template.system_prompt.trim() ||
+                          template.user_template.trim() ||
+                          "空提示词";
+                        return (
+                          <button
+                            key={`${template.id}-${index}`}
+                            type="button"
+                            role="option"
+                            aria-selected={isSelected}
+                            className={
+                              isSelected
+                                ? "settings-item selected"
+                                : "settings-item"
+                            }
+                            onClick={() => setSelectedTemplateIndex(index)}
+                          >
+                            <div className="settings-item-top">
+                              <strong>
+                                {template.name.trim() || "未命名模板"}
+                              </strong>
+                              {isDefault && (
+                                <span className="settings-item-badge">默认</span>
+                              )}
+                            </div>
+                            <div
+                              className="settings-item-sub muted small mono"
+                              title={template.id}
+                            >
+                              {template.id.trim() || "未设 ID"}
+                            </div>
+                            <div
+                              className="settings-item-preview muted small"
+                              title={promptPreview}
+                            >
+                              {promptPreview}
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                  <div className="settings-item-detail">
+                    {selectedTemplateDraft ? (
+                      <div className="profile-editor settings-detail-editor">
+                        <div className="settings-detail-title">
+                          <strong>
+                            {selectedTemplateDraft.template.name.trim() ||
+                              "未命名模板"}
+                          </strong>
+                          <span className="muted small mono">
+                            {selectedTemplateDraft.template.id.trim() ||
+                              "未设 ID"}
+                          </span>
+                        </div>
+                        <div className="two-col">
+                          <label>
+                            <span>ID</span>
+                            <input
+                              value={selectedTemplateDraft.template.id}
+                              onChange={(event) =>
+                                handleTemplateIdChange(
+                                  selectedTemplateDraft.index,
+                                  selectedTemplateDraft.template.id,
+                                  event.target.value,
+                                )
+                              }
+                            />
+                          </label>
+                          <label>
+                            <span>名称</span>
+                            <input
+                              value={selectedTemplateDraft.template.name}
+                              onChange={(event) =>
+                                setTemplateDrafts((items) =>
+                                  items.map((item, itemIndex) =>
+                                    itemIndex === selectedTemplateDraft.index
+                                      ? {
+                                          ...item,
+                                          name: event.target.value,
+                                        }
+                                      : item,
+                                  ),
+                                )
+                              }
+                            />
+                          </label>
+                        </div>
+                        <label>
+                          <span>System Prompt</span>
+                          <textarea
+                            rows={5}
+                            value={selectedTemplateDraft.template.system_prompt}
+                            onChange={(event) =>
+                              setTemplateDrafts((items) =>
+                                items.map((item, itemIndex) =>
+                                  itemIndex === selectedTemplateDraft.index
+                                    ? {
+                                        ...item,
+                                        system_prompt: event.target.value,
+                                      }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                        </label>
+                        <label>
+                          <span>用户模板</span>
+                          <textarea
+                            rows={8}
+                            value={selectedTemplateDraft.template.user_template}
+                            onChange={(event) =>
+                              setTemplateDrafts((items) =>
+                                items.map((item, itemIndex) =>
+                                  itemIndex === selectedTemplateDraft.index
+                                    ? {
+                                        ...item,
+                                        user_template: event.target.value,
+                                      }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                        </label>
+                        <div className="muted small">
+                          变量：
+                          {`{{title}} {{source_url}} {{duration}} {{transcript}}`}
+                        </div>
+                        {templateDrafts.length > 1 && (
+                          <div className="detail-actions">
+                            <button
+                              type="button"
+                              className="btn danger small"
+                              onClick={() =>
+                                handleDeleteTemplate(
+                                  selectedTemplateDraft.index,
+                                )
+                              }
+                            >
+                              删除模板
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="settings-item-empty muted">
+                        选择或添加一个总结模板以开始编辑。
+                      </div>
+                    )}
+                  </div>
                 </div>
               </article>
+              </div>
+                )}
+              </div>
             </div>
           </section>
         )}
