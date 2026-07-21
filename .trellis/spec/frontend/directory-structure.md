@@ -6,9 +6,10 @@
 
 ```text
 src/
-├── main.tsx       # React root and StrictMode
+├── main.tsx       # React root, StrictMode, and early theme apply
 ├── App.tsx        # Application shell, task center, settings, dialogs
-├── App.css        # Global design tokens, layout, states, responsive rules
+├── App.css        # Theme tokens (light/dark + accent), layout, states, responsive rules
+├── theme.ts       # UI theme preferences (mode/accent), localStorage, document dataset
 ├── api.ts         # Typed wrappers for application-specific Tauri commands
 ├── types.ts       # TypeScript mirrors of Rust IPC and persisted domain data
 ├── vite-env.d.ts  # Vite ambient types
@@ -26,8 +27,18 @@ Related boundaries:
 
 ### `main.tsx`
 
-Keep this file limited to application mounting and root providers. The current
-entry point uses `ReactDOM.createRoot` and `React.StrictMode`.
+Keep this file limited to application mounting, root providers, and the earliest
+safe side effects that must run before paint coordination (for example applying
+loaded theme preferences to `document.documentElement`). The current entry
+point uses `ReactDOM.createRoot` and `React.StrictMode`.
+
+### `theme.ts`
+
+Own client-only UI appearance preferences: theme mode (`system` | `light` |
+`dark`), accent palette ids, load/save via `localStorage`, and applying
+`data-theme` / `data-accent` on the document root. Do not put backend config or
+IPC types here. The storage key string is also bootstrapped in `index.html` to
+reduce first-paint flash; keep those two string values synchronized.
 
 ### `api.ts`
 

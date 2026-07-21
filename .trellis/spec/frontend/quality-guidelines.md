@@ -63,6 +63,9 @@ Choose the smallest relevant subset:
 7. Verify `job-updated` plus running-Job polling does not duplicate or regress
    snapshots.
 8. Confirm no complete API key or sensitive header appears in rendered output.
+9. When UI/theme changed: toggle system/light/dark and each accent; reload and
+   confirm preference persistence; open Settings fullscreen and confirm the
+   panel spans the content width without a large empty side gutter.
 
 ## Reporting
 

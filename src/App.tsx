@@ -39,6 +39,18 @@ import type {
   StepStatus,
   SummaryTemplate,
 } from "./types";
+import {
+  ACCENT_COLOR_OPTIONS,
+  applyThemePreferences,
+  loadThemePreferences,
+  resolveThemeMode,
+  saveThemePreferences,
+  THEME_MODE_OPTIONS,
+  type AccentColor,
+  type ResolvedTheme,
+  type ThemeMode,
+  type ThemePreferences,
+} from "./theme";
 import "./App.css";
 
 type CreateMode = "download" | "live" | "import" | null;
@@ -357,9 +369,44 @@ function App() {
   const [settingsTranscribe, setSettingsTranscribe] = useState("");
   const [providerDrafts, setProviderDrafts] = useState<ProviderProfileInput[]>([]);
   const [templateDrafts, setTemplateDrafts] = useState<SummaryTemplate[]>([]);
+  const [themePreferences, setThemePreferences] = useState<ThemePreferences>(() =>
+    loadThemePreferences(),
+  );
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
+    resolveThemeMode(loadThemePreferences().mode),
+  );
 
   providerDraftsRef.current = providerDrafts;
   settingsProxyRef.current = settingsProxy;
+
+  const updateThemePreferences = useCallback(
+    (partialPreferences: Partial<ThemePreferences>) => {
+      setThemePreferences((currentPreferences) => {
+        const nextPreferences: ThemePreferences = {
+          ...currentPreferences,
+          ...partialPreferences,
+        };
+        saveThemePreferences(nextPreferences);
+        setResolvedTheme(applyThemePreferences(nextPreferences));
+        return nextPreferences;
+      });
+    },
+    [],
+  );
+
+  const handleThemeModeChange = useCallback(
+    (mode: ThemeMode) => {
+      updateThemePreferences({ mode });
+    },
+    [updateThemePreferences],
+  );
+
+  const handleAccentColorChange = useCallback(
+    (accent: AccentColor) => {
+      updateThemePreferences({ accent });
+    },
+    [updateThemePreferences],
+  );
 
   const applyConfigToSettings = useCallback((nextConfig: AppConfigPublic) => {
     setConfig(nextConfig);
@@ -578,6 +625,24 @@ function App() {
   useEffect(() => {
     void refresh(false);
   }, [refresh]);
+
+  useEffect(() => {
+    setResolvedTheme(applyThemePreferences(themePreferences));
+
+    if (themePreferences.mode !== "system") {
+      return;
+    }
+
+    const mediaQueryList = window.matchMedia("(prefers-color-scheme: dark)");
+    const handleSystemThemeChange = () => {
+      setResolvedTheme(applyThemePreferences(themePreferences));
+    };
+
+    mediaQueryList.addEventListener("change", handleSystemThemeChange);
+    return () => {
+      mediaQueryList.removeEventListener("change", handleSystemThemeChange);
+    };
+  }, [themePreferences]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1281,21 +1346,24 @@ function App() {
 
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark">VT</div>
+          <div className="brand-mark" aria-hidden="true">
+            VT
+          </div>
           <div>
             <div className="brand-title">{appInfo?.name ?? "video-tool"}</div>
             <div className="brand-subtitle">
-              {appInfo?.description ?? "本地视频工具"} · v
+              {appInfo?.description ?? "本地视频工作台"} · v
               {appInfo?.version ?? "0.1.0"}
             </div>
           </div>
         </div>
 
-        <nav className="nav">
+        <nav className="nav" aria-label="主导航">
           <button
             className={view === "jobs" ? "nav-btn active" : "nav-btn"}
             onClick={() => setView("jobs")}
             type="button"
+            aria-current={view === "jobs" ? "page" : undefined}
           >
             任务中心
           </button>
@@ -1303,12 +1371,33 @@ function App() {
             className={view === "settings" ? "nav-btn active" : "nav-btn"}
             onClick={() => setView("settings")}
             type="button"
+            aria-current={view === "settings" ? "page" : undefined}
           >
             设置
           </button>
         </nav>
 
         <div className="top-actions">
+          <div className="theme-toolbar" role="group" aria-label="外观主题">
+            <div className="theme-mode-group" role="group" aria-label="深浅色模式">
+              {THEME_MODE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={
+                    themePreferences.mode === option.value
+                      ? "theme-mode-btn active"
+                      : "theme-mode-btn"
+                  }
+                  aria-pressed={themePreferences.mode === option.value}
+                  title={option.description}
+                  onClick={() => handleThemeModeChange(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <button
             className="btn secondary"
             onClick={() => void refresh(true)}
@@ -1365,11 +1454,11 @@ function App() {
               <div>
                 <h1>任务中心</h1>
                 <p className="muted">
-                  统一管理下载、直播、本地转写与 AI 总结。媒体始终留在本机，
-                  仅总结文本出网。下载为<strong>最佳努力</strong>，失败请看任务日志。
+                  下载、直播、转写与 AI 总结统一管理。媒体留在本机，仅总结文本出网。
+                  下载为<strong>最佳努力</strong>，失败请查看任务日志。
                 </p>
               </div>
-              <div className="stat-grid">
+              <div className="stat-grid" aria-label="任务统计">
                 <div className="stat-card">
                   <span className="stat-label">全部</span>
                   <strong>{stats.total}</strong>
@@ -1409,9 +1498,14 @@ function App() {
                   <div className="empty">加载中…</div>
                 ) : filteredJobs.length === 0 ? (
                   <div className="empty empty-card">
-                    <div className="empty-icon">◎</div>
+                    <div className="empty-icon" aria-hidden="true">
+                      +
+                    </div>
                     <h3>还没有任务</h3>
-                    <p>从右上角创建下载、直播或本地导入，媒体会写入工作区 jobs 目录。</p>
+                    <p>
+                      从右上角创建下载、直播或本地导入。媒体会写入工作区 jobs
+                      目录，任务状态与日志可在此追踪。
+                    </p>
                     <div className="empty-actions">
                       <button className="btn" type="button" onClick={() => openCreate("download")}>
                         新建下载
@@ -1507,9 +1601,13 @@ function App() {
               <section className="panel detail-panel">
                 {!selectedJob ? (
                   <div className="empty">
-                    <div className="empty-icon">⌘</div>
+                    <div className="empty-icon" aria-hidden="true">
+                      →
+                    </div>
                     <h3>选择一个任务</h3>
-                    <p className="muted">查看流水线步骤、媒体产物与完整日志</p>
+                    <p className="muted">
+                      在左侧列表点选任务，查看流水线步骤、媒体产物与完整日志
+                    </p>
                   </div>
                 ) : (
                   <>
@@ -1796,7 +1894,7 @@ function App() {
               <div>
                 <h1>设置</h1>
                 <p className="muted">
-                  工作区与 API Key 分离；Sidecar 按 内置 → 配置路径 → PATH 解析。
+                  工作区与 API Key 分离存放。Sidecar 解析顺序：内置 → 配置路径 → PATH。
                 </p>
               </div>
               <div className="detail-actions">
@@ -1820,6 +1918,61 @@ function App() {
             </div>
 
             <div className="cards">
+              <article className="card settings-wide theme-card">
+                <h2>外观与主题</h2>
+                <div>
+                  <div className="theme-section-label">深浅色模式</div>
+                  <div className="theme-mode-options" role="group" aria-label="深浅色模式">
+                    {THEME_MODE_OPTIONS.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={
+                          themePreferences.mode === option.value
+                            ? "theme-mode-option active"
+                            : "theme-mode-option"
+                        }
+                        aria-pressed={themePreferences.mode === option.value}
+                        onClick={() => handleThemeModeChange(option.value)}
+                      >
+                        <strong>{option.label}</strong>
+                        <span>{option.description}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="theme-resolved-hint">
+                    当前生效：
+                    {resolvedTheme === "light" ? "浅色" : "深色"}
+                    {themePreferences.mode === "system" ? "（跟随系统）" : ""}
+                  </p>
+                </div>
+                <div>
+                  <div className="theme-section-label">主题强调色</div>
+                  <div className="accent-swatch-list" role="group" aria-label="主题强调色">
+                    {ACCENT_COLOR_OPTIONS.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={
+                          themePreferences.accent === option.value
+                            ? "accent-swatch active"
+                            : "accent-swatch"
+                        }
+                        aria-pressed={themePreferences.accent === option.value}
+                        onClick={() => handleAccentColorChange(option.value)}
+                      >
+                        <span
+                          className="accent-swatch-dot"
+                          style={{ background: option.swatch, color: option.swatch }}
+                          aria-hidden="true"
+                        />
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </article>
+
               <article className="card">
                 <h2>工作区与默认流水线</h2>
                 <div className="form-grid">

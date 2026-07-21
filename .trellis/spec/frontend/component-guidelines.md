@@ -58,14 +58,20 @@ extract shared dialog behavior rather than duplicating the existing effect.
 
 ## Styling
 
-- Reuse `:root` tokens from `src/App.css` for colors, borders, shadows, and
-  typography.
+- Reuse CSS variables from `src/App.css` for colors, borders, shadows, and
+  typography. Theme surfaces are resolved by `html[data-theme="light"|"dark"]`
+  and accent hues by `html[data-accent="..."]` (see `src/theme.ts`).
+- Prefer semantic tokens (`--text`, `--panel`, `--accent-soft`, `--btn-primary-to`)
+  over hard-coded light/dark hex values in component rules.
 - Use kebab-case classes and existing variant composition such as
   `.btn.secondary`.
 - Derive state classes from stable domain values only when every enum member has
   a corresponding visual treatment.
-- Inline styles are reserved for runtime numeric values such as progress width,
-  not general component styling.
+- Inline styles are reserved for runtime values that cannot live in CSS (progress
+  width, accent swatch color from option data), not general component styling.
+- Settings layout should fill the content area on wide windows (`max-width: none`
+  on `.panel.settings`); do not reintroduce a fixed settings max-width that
+  leaves large empty side gutters fullscreen.
 - Respect the current desktop minimum window and responsive breakpoints.
 
 ## Avoid
