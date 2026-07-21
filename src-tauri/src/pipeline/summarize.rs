@@ -174,18 +174,14 @@ pub fn unwrap_outer_markdown_fence(text: &str) -> String {
         return trimmed.to_string();
     }
     let language_tag = opening_line.trim_start_matches('`').trim();
-    if language_tag
-        .chars()
-        .any(|character| !(character.is_ascii_alphanumeric() || character == '-' || character == '_'))
-    {
+    if language_tag.chars().any(|character| {
+        !(character.is_ascii_alphanumeric() || character == '-' || character == '_')
+    }) {
         return trimmed.to_string();
     }
 
     let mut body_lines: Vec<&str> = lines.collect();
-    if body_lines
-        .last()
-        .is_some_and(|line| line.trim() == "```")
-    {
+    if body_lines.last().is_some_and(|line| line.trim() == "```") {
         body_lines.pop();
     }
 
@@ -427,19 +423,13 @@ mod tests {
     #[test]
     fn unwraps_markdown_fence_with_language_and_closing() {
         let raw = "```markdown\n# Title\n\n- item\n```\n";
-        assert_eq!(
-            unwrap_outer_markdown_fence(raw),
-            "# Title\n\n- item"
-        );
+        assert_eq!(unwrap_outer_markdown_fence(raw), "# Title\n\n- item");
     }
 
     #[test]
     fn unwraps_markdown_fence_without_closing() {
         let raw = "```md\n## Heading\n\nbody text";
-        assert_eq!(
-            unwrap_outer_markdown_fence(raw),
-            "## Heading\n\nbody text"
-        );
+        assert_eq!(unwrap_outer_markdown_fence(raw), "## Heading\n\nbody text");
     }
 
     #[test]

@@ -411,8 +411,7 @@ fn run_ingest(
                     let _ = persist(&progress_app, &progress_workspace, &mut current);
                 }
             }));
-            let result =
-                download::run_download(job_dir, &url, &sidecars.yt_dlp, Some(callback))?;
+            let result = download::run_download(job_dir, &url, &sidecars.yt_dlp, Some(callback))?;
             job.media_files = result.media_files;
             job.tool_path = Some(result.tool_path);
             job.tool_version = result.tool_version;

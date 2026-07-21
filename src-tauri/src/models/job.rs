@@ -125,6 +125,10 @@ pub struct Job {
     pub status: JobStatus,
     pub source: JobSource,
     pub pipeline: PipelineOptions,
+    /// User-defined grouping label for list filtering. `None` means ungrouped.
+    /// Omitted on older `source.json` files (Serde default).
+    #[serde(default)]
+    pub group: Option<String>,
     pub current_step: Option<JobStep>,
     pub step_statuses: Vec<StepProgress>,
     #[serde(default)]
@@ -170,6 +174,8 @@ pub struct JobListItem {
     pub kind: JobKind,
     pub title: String,
     pub source_reference: String,
+    #[serde(default)]
+    pub group: Option<String>,
     pub current_step: Option<JobStep>,
     pub progress: f32,
     pub error_message: Option<String>,
@@ -181,6 +187,8 @@ pub struct JobListItem {
 pub struct CreateDownloadJobRequest {
     pub url: String,
     pub title: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
     pub pipeline: Option<PipelineOptions>,
     #[serde(default)]
     pub auto_start: bool,
@@ -190,6 +198,8 @@ pub struct CreateDownloadJobRequest {
 pub struct CreateLiveRecordJobRequest {
     pub url: String,
     pub title: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
     pub segment_minutes: Option<u32>,
     pub pipeline: Option<PipelineOptions>,
     #[serde(default)]
@@ -200,6 +210,8 @@ pub struct CreateLiveRecordJobRequest {
 pub struct CreateImportJobRequest {
     pub local_path: String,
     pub title: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
     pub pipeline: Option<PipelineOptions>,
     #[serde(default)]
     pub auto_start: bool,
@@ -242,6 +254,14 @@ pub struct UpdateJobTitleRequest {
     pub title: Option<String>,
 }
 
+/// Assign or clear a Job grouping label.
+/// Empty / whitespace-only values clear the group (ungrouped).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateJobGroupRequest {
+    pub job_id: String,
+    pub group: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportJobRequest {
     pub job_id: String,
@@ -276,6 +296,8 @@ pub struct SaveConfigRequest {
     pub sidecar_paths: Option<crate::config::SidecarPaths>,
     pub providers: Option<Vec<crate::config::ProviderProfile>>,
     pub templates: Option<Vec<crate::config::SummaryTemplate>>,
+    #[serde(default)]
+    pub job_groups: Option<Vec<crate::config::JobGroupDefinition>>,
 }
 
 impl Job {
@@ -326,6 +348,7 @@ impl Job {
             status: JobStatus::Pending,
             source,
             pipeline,
+            group: None,
             current_step: Some(JobStep::Ingest),
             step_statuses,
             progress: 0.0,
@@ -512,6 +535,12 @@ impl Job {
                 .or(self.source.local_path.as_ref())
                 .cloned()
                 .unwrap_or_default(),
+            group: self
+                .group
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string()),
             current_step: self.current_step.clone(),
             progress: self.progress,
             error_message: self.error_message.clone(),
@@ -583,6 +612,42 @@ mod tests {
         );
         assert_eq!(job.step_statuses.len(), 4);
         assert_eq!(job.display_title(), "t");
+        assert_eq!(job.group, None);
+    }
+
+    #[test]
+    fn deserializes_legacy_job_without_group_field() {
+        let job = Job::new(
+            JobSource {
+                kind: JobKind::Download,
+                url: Some("https://example.com".into()),
+                title: Some("legacy".into()),
+                local_path: None,
+                segment_minutes: None,
+            },
+            PipelineOptions::default(),
+        );
+        let mut value = serde_json::to_value(&job).expect("serialize job");
+        value.as_object_mut().expect("job object").remove("group");
+        let restored: Job = serde_json::from_value(value).expect("deserialize without group");
+        assert_eq!(restored.group, None);
+    }
+
+    #[test]
+    fn list_item_includes_trimmed_group() {
+        let mut job = Job::new(
+            JobSource {
+                kind: JobKind::Download,
+                url: Some("https://example.com".into()),
+                title: Some("t".into()),
+                local_path: None,
+                segment_minutes: None,
+            },
+            PipelineOptions::default(),
+        );
+        job.group = Some("  学习笔记  ".into());
+        let list_item = job.to_list_item();
+        assert_eq!(list_item.group.as_deref(), Some("学习笔记"));
     }
 
     #[test]

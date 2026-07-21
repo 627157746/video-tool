@@ -5,9 +5,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 const APP_CONFIG_DIR_NAME: &str = "video-tool";
 const APP_CONFIG_FILE_NAME: &str = "config.json";
+
+/// User-managed job grouping entry stored in app config.
+/// Jobs store `Job.group` as this entry's `id` (legacy free-text names are
+/// resolved by name when possible).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobGroupDefinition {
+    pub id: String,
+    pub name: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderProfile {
@@ -66,6 +76,9 @@ pub struct AppConfig {
     pub sidecar_paths: SidecarPaths,
     pub providers: Vec<ProviderProfile>,
     pub templates: Vec<SummaryTemplate>,
+    /// Ordered catalog of custom job groups. Empty on older configs.
+    #[serde(default)]
+    pub job_groups: Vec<JobGroupDefinition>,
 }
 
 impl Default for AppConfig {
@@ -92,6 +105,7 @@ impl Default for AppConfig {
                 streamlink: None,
                 transcribe: None,
             },
+            job_groups: Vec::new(),
             providers: vec![
                 ProviderProfile {
                     id: "example-openai".to_string(),
@@ -193,12 +207,14 @@ impl AppConfig {
             let raw = fs::read_to_string(&path)?;
             let mut config: AppConfig = serde_json::from_str(&raw)?;
             config.normalize_provider_models();
+            config.normalize_job_groups();
             config.validate()?;
             return Ok(config);
         }
 
         let mut config = AppConfig::default();
         config.normalize_provider_models();
+        config.normalize_job_groups();
         config.validate()?;
         config.save()?;
         Ok(config)
@@ -309,7 +325,11 @@ impl AppConfig {
         if let Some(templates) = request.templates {
             candidate.templates = templates;
         }
+        if let Some(job_groups) = request.job_groups {
+            candidate.job_groups = job_groups;
+        }
 
+        candidate.normalize_job_groups();
         candidate.validate()?;
         Ok(candidate)
     }
@@ -430,7 +450,110 @@ impl AppConfig {
                 )));
             }
         }
+
+        let mut job_group_ids = HashSet::new();
+        let mut job_group_names = HashSet::new();
+        for group in &self.job_groups {
+            let group_id = group.id.trim();
+            let group_name = group.name.trim();
+            if group_id.is_empty() || group_name.is_empty() {
+                return Err(AppError::message("任务分组 ID 和名称不能为空"));
+            }
+            if !job_group_ids.insert(group_id.to_string()) {
+                return Err(AppError::message(format!("任务分组 ID 重复: {group_id}")));
+            }
+            let name_key = group_name.to_lowercase();
+            if !job_group_names.insert(name_key) {
+                return Err(AppError::message(format!("任务分组名称重复: {group_name}")));
+            }
+        }
         Ok(())
+    }
+
+    /// Trim group ids/names and drop blank entries. Does not invent ids.
+    pub fn normalize_job_groups(&mut self) {
+        let mut seen_ids = HashSet::new();
+        let mut normalized_groups = Vec::new();
+        for group in self.job_groups.drain(..) {
+            let group_id = group.id.trim().to_string();
+            let group_name = group.name.trim().to_string();
+            if group_id.is_empty() || group_name.is_empty() {
+                continue;
+            }
+            if !seen_ids.insert(group_id.clone()) {
+                continue;
+            }
+            normalized_groups.push(JobGroupDefinition {
+                id: group_id,
+                name: group_name,
+            });
+        }
+        self.job_groups = normalized_groups;
+    }
+
+    /// Resolve a job group input to a catalog id.
+    /// Empty input clears. Known id/name reuses the entry. Unknown name creates
+    /// a new catalog entry and returns its id (caller must persist config).
+    pub fn resolve_or_create_job_group(
+        &mut self,
+        raw_group: Option<String>,
+    ) -> AppResult<Option<String>> {
+        let Some(trimmed_input) = raw_group
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+        else {
+            return Ok(None);
+        };
+
+        if let Some(existing_by_id) = self
+            .job_groups
+            .iter()
+            .find(|group| group.id == trimmed_input)
+        {
+            return Ok(Some(existing_by_id.id.clone()));
+        }
+
+        let input_name_key = trimmed_input.to_lowercase();
+        if let Some(existing_by_name) = self
+            .job_groups
+            .iter()
+            .find(|group| group.name.trim().to_lowercase() == input_name_key)
+        {
+            return Ok(Some(existing_by_name.id.clone()));
+        }
+
+        let new_group = JobGroupDefinition {
+            id: Uuid::new_v4().to_string(),
+            name: trimmed_input,
+        };
+        let new_group_id = new_group.id.clone();
+        self.job_groups.push(new_group);
+        Ok(Some(new_group_id))
+    }
+
+    #[allow(dead_code)]
+    pub fn job_group_label(&self, group_value: Option<&str>) -> Option<String> {
+        let trimmed_value = group_value?.trim();
+        if trimmed_value.is_empty() {
+            return None;
+        }
+        if let Some(by_id) = self
+            .job_groups
+            .iter()
+            .find(|group| group.id == trimmed_value)
+        {
+            return Some(by_id.name.clone());
+        }
+        if let Some(by_name) = self
+            .job_groups
+            .iter()
+            .find(|group| group.name.trim().eq_ignore_ascii_case(trimmed_value))
+        {
+            return Some(by_name.name.clone());
+        }
+        Some(trimmed_value.to_string())
     }
 
     pub fn workspace_path(&self) -> PathBuf {
@@ -521,6 +644,7 @@ impl AppConfig {
                 })
                 .collect(),
             templates: self.templates.clone(),
+            job_groups: self.job_groups.clone(),
             config_path: app_config_path()
                 .map(|path| path_to_string(&path))
                 .unwrap_or_default(),
@@ -558,6 +682,8 @@ pub struct AppConfigPublic {
     pub sidecar_paths: SidecarPaths,
     pub providers: Vec<ProviderProfilePublic>,
     pub templates: Vec<SummaryTemplate>,
+    #[serde(default)]
+    pub job_groups: Vec<JobGroupDefinition>,
     pub config_path: String,
 }
 
@@ -713,6 +839,49 @@ mod tests {
             sidecar_paths: None,
             providers: None,
             templates: None,
+            job_groups: None,
         }
+    }
+
+    #[test]
+    fn resolves_or_creates_job_group_by_name() {
+        let mut config = AppConfig::default();
+        let first_id = config
+            .resolve_or_create_job_group(Some(" 学习笔记 ".into()))
+            .expect("create group")
+            .expect("group id");
+        let second_id = config
+            .resolve_or_create_job_group(Some("学习笔记".into()))
+            .expect("reuse group")
+            .expect("group id");
+        assert_eq!(first_id, second_id);
+        assert_eq!(config.job_groups.len(), 1);
+        assert_eq!(config.job_groups[0].name, "学习笔记");
+        assert_eq!(
+            config.job_group_label(Some(&first_id)).as_deref(),
+            Some("学习笔记")
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_job_group_names() {
+        let original = AppConfig::default();
+        let request = SaveConfigRequest {
+            job_groups: Some(vec![
+                JobGroupDefinition {
+                    id: "g1".into(),
+                    name: "学习".into(),
+                },
+                JobGroupDefinition {
+                    id: "g2".into(),
+                    name: "学习".into(),
+                },
+            ]),
+            ..empty_save_request()
+        };
+        let error = original
+            .candidate_with_update(request)
+            .expect_err("duplicate names must fail");
+        assert!(error.to_string().contains("任务分组名称重复"));
     }
 }

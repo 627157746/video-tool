@@ -53,12 +53,20 @@ export interface UpdateJobTitleRequest {
   title?: string | null;
 }
 
+export interface UpdateJobGroupRequest {
+  job_id: string;
+  /** Empty / null clears the group (ungrouped). */
+  group?: string | null;
+}
+
 export interface JobListItem {
   id: string;
   status: JobStatus;
   kind: JobKind;
   title: string;
   source_reference: string;
+  /** Custom grouping label; null / omitted means ungrouped. */
+  group?: string | null;
   current_step?: JobStep | null;
   progress: number;
   error_message?: string | null;
@@ -83,6 +91,8 @@ export interface Job {
     segment_minutes?: number | null;
   };
   pipeline: PipelineOptions;
+  /** Custom grouping label; null / omitted means ungrouped. */
+  group?: string | null;
   current_step?: JobStep | null;
   step_statuses: StepProgress[];
   progress: number;
@@ -147,6 +157,12 @@ export interface SummaryTemplate {
   user_template: string;
 }
 
+/** Managed job group catalog entry stored in app config. */
+export interface JobGroupDefinition {
+  id: string;
+  name: string;
+}
+
 export interface SidecarPaths {
   ffmpeg?: string | null;
   ffprobe?: string | null;
@@ -171,6 +187,8 @@ export interface AppConfigPublic {
   sidecar_paths: SidecarPaths;
   providers: ProviderProfilePublic[];
   templates: SummaryTemplate[];
+  /** Ordered catalog of custom job groups; empty/omitted on older configs. */
+  job_groups?: JobGroupDefinition[];
   config_path: string;
 }
 
@@ -190,6 +208,7 @@ export interface SaveConfigRequest {
   sidecar_paths?: SidecarPaths | null;
   providers?: ProviderProfileInput[] | null;
   templates?: SummaryTemplate[] | null;
+  job_groups?: JobGroupDefinition[] | null;
 }
 
 export interface ResolvedBinary {

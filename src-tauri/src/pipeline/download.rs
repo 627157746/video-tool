@@ -36,9 +36,7 @@ pub fn run_download(
                 logs::append_log(
                     job_dir,
                     "download",
-                    &format!(
-                        "douyin resolver failed, falling back to yt-dlp: {error}\n"
-                    ),
+                    &format!("douyin resolver failed, falling back to yt-dlp: {error}\n"),
                 )?;
                 // Continue to yt-dlp with the extracted short/full URL when possible.
                 let fallback_url = douyin::extract_douyin_url(raw_input)
@@ -117,8 +115,7 @@ pub fn run_douyin_download(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok());
 
-    let extension =
-        douyin::guess_media_extension(content_type.as_deref(), &resolved.play_url);
+    let extension = douyin::guess_media_extension(content_type.as_deref(), &resolved.play_url);
     let destination = media_dir.join(format!("original.{extension}"));
     let partial_path = media_dir.join(format!("original.{extension}.part"));
 
@@ -140,7 +137,10 @@ pub fn run_douyin_download(
     }
 
     let mut file = fs::File::create(&partial_path).map_err(|error| {
-        AppError::message(format!("无法创建临时文件 {}: {error}", partial_path.display()))
+        AppError::message(format!(
+            "无法创建临时文件 {}: {error}",
+            partial_path.display()
+        ))
     })?;
 
     let mut response_body = response;
@@ -150,14 +150,15 @@ pub fn run_douyin_download(
 
     loop {
         let bytes_read = response_body.read(&mut buffer).map_err(|error| {
-            AppError::message(format!("读取视频流失败: {error}。已写入 {downloaded_bytes} 字节。"))
+            AppError::message(format!(
+                "读取视频流失败: {error}。已写入 {downloaded_bytes} 字节。"
+            ))
         })?;
         if bytes_read == 0 {
             break;
         }
-        file.write_all(&buffer[..bytes_read]).map_err(|error| {
-            AppError::message(format!("写入视频文件失败: {error}"))
-        })?;
+        file.write_all(&buffer[..bytes_read])
+            .map_err(|error| AppError::message(format!("写入视频文件失败: {error}")))?;
         downloaded_bytes += bytes_read as u64;
 
         if let Some(total_bytes) = content_length.filter(|value| *value > 0) {
@@ -169,9 +170,7 @@ pub fn run_douyin_download(
                 let _ = logs::append_log(
                     job_dir,
                     "download",
-                    &format!(
-                        "[download] {percent:.1}% ({downloaded_bytes}/{total_bytes} bytes)"
-                    ),
+                    &format!("[download] {percent:.1}% ({downloaded_bytes}/{total_bytes} bytes)"),
                 );
             }
             report_progress(&on_progress, percent);

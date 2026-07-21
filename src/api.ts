@@ -8,6 +8,7 @@ import type {
   PipelineOptions,
   SaveConfigRequest,
   SidecarStatus,
+  UpdateJobGroupRequest,
   UpdateJobPipelineRequest,
   UpdateJobTitleRequest,
 } from "./types";
@@ -45,6 +46,7 @@ export async function deleteJob(jobId: string): Promise<void> {
 export async function createDownloadJob(input: {
   url: string;
   title?: string;
+  group?: string | null;
   pipeline?: PipelineOptions;
   auto_start?: boolean;
 }): Promise<Job> {
@@ -54,6 +56,7 @@ export async function createDownloadJob(input: {
 export async function createLiveRecordJob(input: {
   url: string;
   title?: string;
+  group?: string | null;
   segment_minutes?: number;
   pipeline?: PipelineOptions;
   auto_start?: boolean;
@@ -64,6 +67,7 @@ export async function createLiveRecordJob(input: {
 export async function createImportJob(input: {
   local_path: string;
   title?: string;
+  group?: string | null;
   pipeline?: PipelineOptions;
   auto_start?: boolean;
 }): Promise<Job> {
@@ -138,6 +142,12 @@ export async function updateJobTitle(
   request: UpdateJobTitleRequest,
 ): Promise<Job> {
   return invoke<Job>("update_job_title", { request });
+}
+
+export async function updateJobGroup(
+  request: UpdateJobGroupRequest,
+): Promise<Job> {
+  return invoke<Job>("update_job_group", { request });
 }
 
 export async function exportJob(

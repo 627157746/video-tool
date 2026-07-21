@@ -4,7 +4,7 @@ use crate::models::{
     CreateDownloadJobRequest, CreateImportJobRequest, CreateLiveRecordJobRequest, ExportJobRequest,
     Job, JobKind, JobListItem, JobLogRequest, JobSource, PipelineOptions,
     RetryTranscriptSegmentRequest, RunJobRequest, SaveConfigRequest, SelectSegmentsRequest,
-    TestProviderRequest, UpdateJobPipelineRequest, UpdateJobTitleRequest,
+    TestProviderRequest, UpdateJobGroupRequest, UpdateJobPipelineRequest, UpdateJobTitleRequest,
 };
 use crate::pipeline::{self, RunnerState};
 use crate::sidecar::SidecarStatus;
@@ -67,6 +67,7 @@ pub fn reload_config(state: State<'_, AppState>) -> AppResult<AppConfigPublic> {
 
 #[tauri::command]
 pub fn save_config(
+    app: AppHandle,
     state: State<'_, AppState>,
     request: SaveConfigRequest,
 ) -> AppResult<AppConfigPublic> {
@@ -82,6 +83,51 @@ pub fn save_config(
     if workspace_changed {
         workspace::recover_interrupted_jobs(candidate.workspace_path())?;
     }
+
+    let removed_group_ids = collect_removed_job_group_ids(&current_config, &candidate);
+    if !removed_group_ids.is_empty() {
+        let workspace_path = candidate.workspace_path();
+        let jobs = workspace::list_jobs(&workspace_path)?;
+        for job in &jobs {
+            let Some(group_id) = job
+                .group
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            if !removed_group_ids.contains(group_id) {
+                continue;
+            }
+            if state.runner.is_job_running(&job.id) {
+                return Err(AppError::message(format!(
+                    "任务「{}」仍在运行且属于将被删除的分组，请等待结束后再保存",
+                    job.display_title()
+                )));
+            }
+        }
+        for mut job in jobs {
+            let Some(group_id) = job
+                .group
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string())
+            else {
+                continue;
+            };
+            if !removed_group_ids.contains(group_id.as_str()) {
+                continue;
+            }
+            job.group = None;
+            job.updated_at = chrono::Utc::now();
+            workspace::save_job(&workspace_path, &job)?;
+            use tauri::Emitter;
+            let _ = app.emit("job-updated", &job);
+        }
+    }
+
     candidate.save()?;
     let public_view = candidate.public_view();
     *state.config.lock().expect("config lock") = candidate;
@@ -123,7 +169,7 @@ pub fn create_download_job(
 ) -> AppResult<Job> {
     let _operation_guard = state.operation_lock.lock().expect("operation lock");
     let (job, should_start, config_snapshot, runner) = {
-        let config = state.config.lock().expect("config lock");
+        let mut config = state.config.lock().expect("config lock");
         config.ensure_workspace()?;
 
         let url = request.url.trim().to_string();
@@ -134,7 +180,7 @@ pub fn create_download_job(
         // the original input; the download step extracts the real URL.
 
         let pipeline = merge_pipeline(&config, request.pipeline);
-        let job = Job::new(
+        let mut job = Job::new(
             JobSource {
                 kind: JobKind::Download,
                 url: Some(url),
@@ -144,6 +190,11 @@ pub fn create_download_job(
             },
             pipeline,
         );
+        let previous_group_count = config.job_groups.len();
+        job.group = config.resolve_or_create_job_group(request.group)?;
+        if config.job_groups.len() != previous_group_count {
+            config.save()?;
+        }
 
         workspace::create_job_directories(config.workspace_path(), &job)?;
         (
@@ -169,7 +220,7 @@ pub fn create_live_record_job(
 ) -> AppResult<Job> {
     let _operation_guard = state.operation_lock.lock().expect("operation lock");
     let (job, should_start, config_snapshot, runner) = {
-        let config = state.config.lock().expect("config lock");
+        let mut config = state.config.lock().expect("config lock");
         config.ensure_workspace()?;
 
         let url = request.url.trim().to_string();
@@ -183,7 +234,7 @@ pub fn create_live_record_job(
             .unwrap_or(config.default_segment_minutes)
             .max(1);
 
-        let job = Job::new(
+        let mut job = Job::new(
             JobSource {
                 kind: JobKind::LiveRecord,
                 url: Some(url),
@@ -193,6 +244,11 @@ pub fn create_live_record_job(
             },
             pipeline,
         );
+        let previous_group_count = config.job_groups.len();
+        job.group = config.resolve_or_create_job_group(request.group)?;
+        if config.job_groups.len() != previous_group_count {
+            config.save()?;
+        }
 
         workspace::create_job_directories(config.workspace_path(), &job)?;
         (
@@ -218,7 +274,7 @@ pub fn create_import_job(
 ) -> AppResult<Job> {
     let _operation_guard = state.operation_lock.lock().expect("operation lock");
     let (job, should_start, config_snapshot, runner) = {
-        let config = state.config.lock().expect("config lock");
+        let mut config = state.config.lock().expect("config lock");
         config.ensure_workspace()?;
 
         let local_path = request.local_path.trim().to_string();
@@ -227,7 +283,7 @@ pub fn create_import_job(
         }
 
         let pipeline = merge_pipeline(&config, request.pipeline);
-        let job = Job::new(
+        let mut job = Job::new(
             JobSource {
                 kind: JobKind::ImportLocal,
                 url: None,
@@ -237,6 +293,11 @@ pub fn create_import_job(
             },
             pipeline,
         );
+        let previous_group_count = config.job_groups.len();
+        job.group = config.resolve_or_create_job_group(request.group)?;
+        if config.job_groups.len() != previous_group_count {
+            config.save()?;
+        }
 
         workspace::create_job_directories(config.workspace_path(), &job)?;
         (
@@ -405,6 +466,45 @@ pub fn update_job_title(
 }
 
 #[tauri::command]
+pub fn update_job_group(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: UpdateJobGroupRequest,
+) -> AppResult<Job> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    // Runner owns the live Job snapshot; concurrent disk writes can clobber a
+    // group change that lands between progress updates.
+    if state.runner.is_job_running(&request.job_id) {
+        return Err(AppError::message("任务运行期间不能修改分组"));
+    }
+
+    let mut config = state.config.lock().expect("config lock");
+    let mut job = workspace::load_job(config.workspace_path(), &request.job_id)?;
+
+    let previous_group_count = config.job_groups.len();
+    let next_group = config.resolve_or_create_job_group(request.group)?;
+    if config.job_groups.len() != previous_group_count {
+        config.save()?;
+    }
+    let current_group = job
+        .group
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    if current_group == next_group {
+        return Ok(job);
+    }
+
+    job.group = next_group;
+    job.updated_at = chrono::Utc::now();
+    workspace::save_job(config.workspace_path(), &job)?;
+    use tauri::Emitter;
+    let _ = app.emit("job-updated", &job);
+    Ok(job)
+}
+
+#[tauri::command]
 pub fn update_job_pipeline(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -476,6 +576,23 @@ fn normalize_optional_id(value: Option<String>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string())
+}
+
+fn collect_removed_job_group_ids(
+    previous_config: &AppConfig,
+    next_config: &AppConfig,
+) -> std::collections::HashSet<String> {
+    let next_group_ids: std::collections::HashSet<&str> = next_config
+        .job_groups
+        .iter()
+        .map(|group| group.id.as_str())
+        .collect();
+    previous_config
+        .job_groups
+        .iter()
+        .map(|group| group.id.clone())
+        .filter(|group_id| !next_group_ids.contains(group_id.as_str()))
+        .collect()
 }
 
 #[tauri::command]

@@ -135,9 +135,7 @@ fn fetch_share_page_html(client: &Client, share_url: &str) -> AppResult<String> 
         .header(USER_AGENT, DOUYIN_MOBILE_USER_AGENT)
         .send()
         .map_err(|error| {
-            AppError::message(format!(
-                "请求抖音分享页失败: {error}。地址: {share_url}"
-            ))
+            AppError::message(format!("请求抖音分享页失败: {error}。地址: {share_url}"))
         })?;
 
     let status = response.status();
@@ -154,9 +152,9 @@ fn fetch_share_page_html(client: &Client, share_url: &str) -> AppResult<String> 
 
 fn extract_router_data_json(html: &str) -> AppResult<Value> {
     const MARKER: &str = "window._ROUTER_DATA";
-    let marker_position = html
-        .find(MARKER)
-        .ok_or_else(|| AppError::message("分享页中未找到 window._ROUTER_DATA，页面结构可能已变化。"))?;
+    let marker_position = html.find(MARKER).ok_or_else(|| {
+        AppError::message("分享页中未找到 window._ROUTER_DATA，页面结构可能已变化。")
+    })?;
 
     let after_marker = &html[marker_position + MARKER.len()..];
     let equals_position = after_marker
@@ -227,9 +225,7 @@ fn extract_play_addr_and_title(router_data: &Value) -> AppResult<(String, Option
             })
         })
         .ok_or_else(|| {
-            AppError::message(
-                "分享页 loaderData 中未找到 video_(id)/page 或可用的 videoInfoRes。",
-            )
+            AppError::message("分享页 loaderData 中未找到 video_(id)/page 或可用的 videoInfoRes。")
         })?;
 
     let item = page_value
@@ -297,8 +293,10 @@ fn normalize_url(url: &str) -> String {
 fn url_in_text_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
-        Regex::new(r#"(?i)https?://[^\s<>"']+|//[^\s<>"']+|(?:www\.)?(?:v\.)?douyin\.com/[^\s<>"']+"#)
-            .expect("url regex")
+        Regex::new(
+            r#"(?i)https?://[^\s<>"']+|//[^\s<>"']+|(?:www\.)?(?:v\.)?douyin\.com/[^\s<>"']+"#,
+        )
+        .expect("url regex")
     })
 }
 
@@ -361,13 +359,17 @@ mod tests {
     #[test]
     fn extracts_video_id_from_share_and_web_paths() {
         assert_eq!(
-            extract_video_id_from_text("https://www.iesdouyin.com/share/video/7659741979496025378/")
-                .as_deref(),
+            extract_video_id_from_text(
+                "https://www.iesdouyin.com/share/video/7659741979496025378/"
+            )
+            .as_deref(),
             Some("7659741979496025378")
         );
         assert_eq!(
-            extract_video_id_from_text("https://www.douyin.com/video/7662996900462726440?previous_page=app_code_link")
-                .as_deref(),
+            extract_video_id_from_text(
+                "https://www.douyin.com/video/7662996900462726440?previous_page=app_code_link"
+            )
+            .as_deref(),
             Some("7662996900462726440")
         );
     }
@@ -416,7 +418,9 @@ mod tests {
 
     #[test]
     fn non_douyin_input_is_rejected() {
-        assert!(!looks_like_douyin_input("https://www.youtube.com/watch?v=abc"));
+        assert!(!looks_like_douyin_input(
+            "https://www.youtube.com/watch?v=abc"
+        ));
         assert!(extract_douyin_url("hello world").is_none());
     }
 
@@ -426,6 +430,9 @@ mod tests {
             guess_media_extension(Some("video/mp4; charset=binary"), "https://x/y"),
             "mp4"
         );
-        assert_eq!(guess_media_extension(None, "https://cdn.example/a.webm?x=1"), "webm");
+        assert_eq!(
+            guess_media_extension(None, "https://cdn.example/a.webm?x=1"),
+            "webm"
+        );
     }
 }

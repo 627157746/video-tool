@@ -25,6 +25,7 @@ import {
   selectJobSegments,
   stopRecording,
   testProvider,
+  updateJobGroup,
   updateJobPipeline,
   updateJobTitle,
 } from "./api";
@@ -32,6 +33,7 @@ import type {
   AppConfigPublic,
   AppInfo,
   Job,
+  JobGroupDefinition,
   JobKind,
   JobListItem,
   JobStatus,
@@ -62,6 +64,7 @@ type SettingsSection =
   | "pipeline"
   | "providers"
   | "templates"
+  | "groups"
   | "sidecars";
 type JobDetailSection =
   | "overview"
@@ -110,6 +113,11 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
     id: "templates",
     label: "总结模板",
     description: "管理总结提示词模板；左侧列表选择，右侧编辑内容。",
+  },
+  {
+    id: "groups",
+    label: "任务分组",
+    description: "维护分组目录：新增、重命名、排序、删除；任务挂接分组 ID。",
   },
   {
     id: "sidecars",
@@ -284,6 +292,102 @@ function formatProgress(value: number | undefined): string {
   return `${Math.max(0, Math.min(100, value)).toFixed(0)}%`;
 }
 
+function normalizeJobGroup(group: string | null | undefined): string | null {
+  const trimmedGroup = group?.trim() ?? "";
+  return trimmedGroup ? trimmedGroup : null;
+}
+
+/** Resolve Job.group (id or legacy free-text) to a display name. */
+function resolveJobGroupLabel(
+  groupValue: string | null | undefined,
+  catalog: JobGroupDefinition[],
+): string | null {
+  const trimmedGroupValue = normalizeJobGroup(groupValue);
+  if (!trimmedGroupValue) {
+    return null;
+  }
+  const matchedById = catalog.find(
+    (groupEntry) => groupEntry.id === trimmedGroupValue,
+  );
+  if (matchedById) {
+    return matchedById.name;
+  }
+  const matchedByName = catalog.find(
+    (groupEntry) =>
+      groupEntry.name.trim().toLowerCase() ===
+      trimmedGroupValue.toLowerCase(),
+  );
+  if (matchedByName) {
+    return matchedByName.name;
+  }
+  return trimmedGroupValue;
+}
+
+/**
+ * Stable filter key for a job group value.
+ * Known catalog entries use `id:<id>`; orphans use `legacy:<name>`.
+ */
+function resolveJobGroupFilterKey(
+  groupValue: string | null | undefined,
+  catalog: JobGroupDefinition[],
+): string | null {
+  const trimmedGroupValue = normalizeJobGroup(groupValue);
+  if (!trimmedGroupValue) {
+    return null;
+  }
+  const matchedById = catalog.find(
+    (groupEntry) => groupEntry.id === trimmedGroupValue,
+  );
+  if (matchedById) {
+    return `id:${matchedById.id}`;
+  }
+  const matchedByName = catalog.find(
+    (groupEntry) =>
+      groupEntry.name.trim().toLowerCase() ===
+      trimmedGroupValue.toLowerCase(),
+  );
+  if (matchedByName) {
+    return `id:${matchedByName.id}`;
+  }
+  return `legacy:${trimmedGroupValue.toLowerCase()}`;
+}
+
+/**
+ * Value for the job-detail group <select>: catalog id when known,
+ * raw legacy string when orphaned, or "" when ungrouped.
+ */
+function resolveJobGroupSelectValue(
+  groupValue: string | null | undefined,
+  catalog: JobGroupDefinition[],
+): string {
+  const trimmedGroupValue = normalizeJobGroup(groupValue);
+  if (!trimmedGroupValue) {
+    return "";
+  }
+  const matchedById = catalog.find(
+    (groupEntry) => groupEntry.id === trimmedGroupValue,
+  );
+  if (matchedById) {
+    return matchedById.id;
+  }
+  const matchedByName = catalog.find(
+    (groupEntry) =>
+      groupEntry.name.trim().toLowerCase() ===
+      trimmedGroupValue.toLowerCase(),
+  );
+  if (matchedByName) {
+    return matchedByName.id;
+  }
+  return trimmedGroupValue;
+}
+
+function createClientGroupId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `group-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function jobToListItem(job: Job): JobListItem {
   return {
     id: job.id,
@@ -293,6 +397,7 @@ function jobToListItem(job: Job): JobListItem {
       ? job.source.title
       : job.source.url || job.source.local_path || job.id,
     source_reference: job.source.url || job.source.local_path || "",
+    group: normalizeJobGroup(job.group),
     current_step: job.current_step,
     progress: job.progress ?? 0,
     error_message: job.error_message,
@@ -482,6 +587,8 @@ function App() {
   const [transcriptText, setTranscriptText] = useState("");
   const [summaryText, setSummaryText] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  /** `"all"` | `"ungrouped"` | exact group name for filtering the job list. */
+  const [groupFilter, setGroupFilter] = useState<string>("all");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -514,6 +621,7 @@ function App() {
 
   const [formUrl, setFormUrl] = useState("");
   const [formTitle, setFormTitle] = useState("");
+  const [formGroup, setFormGroup] = useState("");
   const [formLocalPath, setFormLocalPath] = useState("");
   const [formSegmentMinutes, setFormSegmentMinutes] = useState(30);
   const [autoTranscribe, setAutoTranscribe] = useState(true);
@@ -533,6 +641,9 @@ function App() {
   const [jobTitleDraft, setJobTitleDraft] = useState("");
   const [isSavingJobTitle, setIsSavingJobTitle] = useState(false);
   const jobTitleDraftRef = useRef("");
+  /** Selected group id (or legacy free-text value); empty string means ungrouped. */
+  const [jobGroupDraft, setJobGroupDraft] = useState("");
+  const [isSavingJobGroup, setIsSavingJobGroup] = useState(false);
 
   const [settingsWorkspace, setSettingsWorkspace] = useState("");
   const [settingsSegmentMinutes, setSettingsSegmentMinutes] = useState(30);
@@ -553,8 +664,10 @@ function App() {
   const [settingsTranscribe, setSettingsTranscribe] = useState("");
   const [providerDrafts, setProviderDrafts] = useState<ProviderProfileInput[]>([]);
   const [templateDrafts, setTemplateDrafts] = useState<SummaryTemplate[]>([]);
+  const [groupDrafts, setGroupDrafts] = useState<JobGroupDefinition[]>([]);
   const [selectedProviderIndex, setSelectedProviderIndex] = useState(0);
   const [selectedTemplateIndex, setSelectedTemplateIndex] = useState(0);
+  const [selectedGroupIndex, setSelectedGroupIndex] = useState(0);
   const [settingsSection, setSettingsSection] =
     useState<SettingsSection>("pipeline");
   const [jobDetailSection, setJobDetailSection] =
@@ -660,6 +773,14 @@ function App() {
         return 0;
       }
       return Math.min(currentIndex, nextTemplates.length - 1);
+    });
+    const nextGroupDrafts = nextConfig.job_groups ?? [];
+    setGroupDrafts(nextGroupDrafts);
+    setSelectedGroupIndex((currentIndex) => {
+      if (nextGroupDrafts.length === 0) {
+        return 0;
+      }
+      return Math.min(currentIndex, nextGroupDrafts.length - 1);
     });
     setFormSegmentMinutes(nextConfig.default_segment_minutes);
     setAutoTranscribe(nextConfig.default_auto_transcribe);
@@ -938,16 +1059,63 @@ function App() {
     return () => window.clearTimeout(dismissTimer);
   }, [statusMessage]);
 
+  const managedJobGroups = useMemo(
+    () => config?.job_groups ?? groupDrafts,
+    [config?.job_groups, groupDrafts],
+  );
+
+  const orphanGroupFilterOptions = useMemo(() => {
+    const orphanOptions = new Map<string, string>();
+    for (const job of jobs) {
+      const filterKey = resolveJobGroupFilterKey(job.group, managedJobGroups);
+      if (!filterKey || !filterKey.startsWith("legacy:")) {
+        continue;
+      }
+      const label = resolveJobGroupLabel(job.group, managedJobGroups);
+      if (label) {
+        orphanOptions.set(filterKey, label);
+      }
+    }
+    return Array.from(orphanOptions.entries())
+      .map(([filterKey, label]) => ({ filterKey, label }))
+      .sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
+  }, [jobs, managedJobGroups]);
+
+  const hasUngroupedJobs = useMemo(
+    () => jobs.some((job) => !normalizeJobGroup(job.group)),
+    [jobs],
+  );
+
+  const hasAnyGroupFilterChips =
+    managedJobGroups.length > 0 ||
+    orphanGroupFilterOptions.length > 0 ||
+    hasUngroupedJobs;
+
   const filteredJobs = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    if (!query) {
-      return jobs;
-    }
     return jobs.filter((job) => {
+      const jobGroupLabel = resolveJobGroupLabel(job.group, managedJobGroups);
+      const jobGroupFilterKey = resolveJobGroupFilterKey(
+        job.group,
+        managedJobGroups,
+      );
+      if (groupFilter === "ungrouped") {
+        if (jobGroupFilterKey) {
+          return false;
+        }
+      } else if (groupFilter !== "all") {
+        if (jobGroupFilterKey !== groupFilter) {
+          return false;
+        }
+      }
+      if (!query) {
+        return true;
+      }
       const haystack = [
         job.id,
         job.title,
         job.source_reference,
+        jobGroupLabel ?? "",
         job.status,
         STATUS_LABEL[job.status],
         job.kind,
@@ -962,7 +1130,7 @@ function App() {
         .toLowerCase();
       return haystack.includes(query);
     });
-  }, [jobs, searchQuery]);
+  }, [groupFilter, jobs, managedJobGroups, searchQuery]);
 
   const stats = useMemo(() => {
     return {
@@ -1106,6 +1274,7 @@ function App() {
       setJobTemplateId("");
       setJobTitleDraft("");
       jobTitleDraftRef.current = "";
+      setJobGroupDraft("");
       return;
     }
     setJobProviderId(selectedJob.pipeline.provider_profile_id ?? "");
@@ -1122,12 +1291,16 @@ function App() {
     if (!selectedJob) {
       setJobTitleDraft("");
       jobTitleDraftRef.current = "";
+      setJobGroupDraft("");
       return;
     }
     const savedTitle = selectedJob.source.title?.trim() ?? "";
     setJobTitleDraft(savedTitle);
     jobTitleDraftRef.current = savedTitle;
-  }, [selectedJob?.id]);
+    setJobGroupDraft(
+      resolveJobGroupSelectValue(selectedJob.group, managedJobGroups),
+    );
+  }, [managedJobGroups, selectedJob?.id]);
 
   useEffect(() => {
     if (!selectedJob || isSavingJobTitle) {
@@ -1140,6 +1313,30 @@ function App() {
       jobTitleDraftRef.current = savedTitle;
     }
   }, [isSavingJobTitle, jobTitleDraft, selectedJob?.source.title, selectedJob]);
+
+  useEffect(() => {
+    if (!selectedJob || isSavingJobGroup) {
+      return;
+    }
+    setJobGroupDraft(
+      resolveJobGroupSelectValue(selectedJob.group, managedJobGroups),
+    );
+  }, [isSavingJobGroup, managedJobGroups, selectedJob?.group, selectedJob]);
+
+  useEffect(() => {
+    if (groupFilter === "all" || groupFilter === "ungrouped") {
+      return;
+    }
+    const managedStillExists = managedJobGroups.some(
+      (groupEntry) => `id:${groupEntry.id}` === groupFilter,
+    );
+    const orphanStillExists = orphanGroupFilterOptions.some(
+      (option) => option.filterKey === groupFilter,
+    );
+    if (!managedStillExists && !orphanStillExists) {
+      setGroupFilter("all");
+    }
+  }, [groupFilter, managedJobGroups, orphanGroupFilterOptions]);
 
   useEffect(() => {
     if (!createMode) {
@@ -1210,6 +1407,7 @@ function App() {
   function resetCreateForm() {
     setFormUrl("");
     setFormTitle("");
+    setFormGroup("");
     setFormLocalPath("");
     setFormSegmentMinutes(config?.default_segment_minutes ?? 30);
     setAutoTranscribe(config?.default_auto_transcribe ?? true);
@@ -1344,12 +1542,16 @@ function App() {
       transcribe_language: formTranscribeLanguage,
     };
 
+    // formGroup stores a managed group id, or empty for ungrouped.
+    const createGroup = normalizeJobGroup(formGroup);
+
     try {
       let created: Job;
       if (createMode === "download") {
         created = await createDownloadJob({
           url: formUrl,
           title: formTitle || undefined,
+          group: createGroup,
           pipeline,
           auto_start: autoStart,
         });
@@ -1357,6 +1559,7 @@ function App() {
         created = await createLiveRecordJob({
           url: formUrl,
           title: formTitle || undefined,
+          group: createGroup,
           segment_minutes: formSegmentMinutes,
           pipeline,
           auto_start: autoStart,
@@ -1365,12 +1568,20 @@ function App() {
         created = await createImportJob({
           local_path: formLocalPath,
           title: formTitle || undefined,
+          group: createGroup,
           pipeline,
           auto_start: autoStart,
         });
       }
 
       closeCreate();
+      // Creating with a new group name may have extended the managed catalog.
+      try {
+        const refreshedConfig = await getConfig();
+        applyConfigToSettings(refreshedConfig);
+      } catch {
+        // Job create already succeeded; catalog refresh is best-effort.
+      }
       setStatusMessage(
         autoStart
           ? "任务已创建并开始执行（下载为最佳努力，失败请看日志）"
@@ -1468,6 +1679,71 @@ function App() {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setIsSavingJobTitle(false);
+    }
+  }
+
+  async function handleJobGroupSelectChange(nextSelectValue: string) {
+    if (!selectedJob || isSavingJobGroup) {
+      return;
+    }
+    if (selectedJob.status === "running") {
+      setJobGroupDraft(
+        resolveJobGroupSelectValue(selectedJob.group, managedJobGroups),
+      );
+      return;
+    }
+
+    const nextGroupId = normalizeJobGroup(nextSelectValue);
+    const currentSelectValue = resolveJobGroupSelectValue(
+      selectedJob.group,
+      managedJobGroups,
+    );
+    if ((nextGroupId ?? "") === currentSelectValue) {
+      setJobGroupDraft(currentSelectValue);
+      return;
+    }
+
+    setJobGroupDraft(nextGroupId ?? "");
+    setIsSavingJobGroup(true);
+    setErrorMessage(null);
+    try {
+      const updatedJob = await updateJobGroup({
+        job_id: selectedJob.id,
+        group: nextGroupId,
+      });
+      // Selecting a legacy free-text option may normalize to a catalog id.
+      let catalog = managedJobGroups;
+      try {
+        const refreshedConfig = await getConfig();
+        applyConfigToSettings(refreshedConfig);
+        catalog = refreshedConfig.job_groups ?? managedJobGroups;
+      } catch {
+        // Job update already succeeded; catalog refresh is best-effort.
+      }
+      const savedSelectValue = resolveJobGroupSelectValue(
+        updatedJob.group,
+        catalog,
+      );
+      const savedLabel =
+        resolveJobGroupLabel(updatedJob.group, catalog) ?? "";
+      selectedJobRef.current = updatedJob;
+      setSelectedJob(updatedJob);
+      setJobs((previousJobs) =>
+        previousJobs.map((entry) =>
+          entry.id === updatedJob.id ? jobToListItem(updatedJob) : entry,
+        ),
+      );
+      setJobGroupDraft(savedSelectValue);
+      setStatusMessage(
+        savedLabel ? `分组已更新：${savedLabel}` : "已清除任务分组",
+      );
+    } catch (error) {
+      setJobGroupDraft(
+        resolveJobGroupSelectValue(selectedJob.group, managedJobGroups),
+      );
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSavingJobGroup(false);
     }
   }
 
@@ -1628,6 +1904,14 @@ function App() {
         ...template,
         id: template.id.trim(),
       }));
+      const normalizedGroupDrafts = groupDrafts
+        .map((groupEntry) => ({
+          id: groupEntry.id.trim(),
+          name: groupEntry.name.trim(),
+        }))
+        .filter(
+          (groupEntry) => groupEntry.id.length > 0 && groupEntry.name.length > 0,
+        );
       const defaultProviderProfileId = resolveExistingDefaultId(
         settingsDefaultProviderId,
         normalizedProviderDrafts.map((provider) => provider.id),
@@ -1660,13 +1944,13 @@ function App() {
         },
         providers: normalizedProviderDrafts,
         templates: normalizedTemplateDrafts,
+        job_groups: normalizedGroupDrafts,
       });
       applyConfigToSettings(next);
+      const nextJobs = await listJobs();
+      setJobs(nextJobs);
       if (previousWorkspace && previousWorkspace !== next.workspace_dir) {
-        setJobs([]);
         clearSelectedJobState();
-        const nextJobs = await listJobs();
-        setJobs(nextJobs);
       }
       const nextSidecars = await probeSidecars();
       setSidecars(nextSidecars);
@@ -1845,6 +2129,76 @@ function App() {
       ),
     );
   }
+
+  function handleAddGroup() {
+    const nextGroupIndex = groupDrafts.length;
+    setGroupDrafts((currentGroups) => [
+      ...currentGroups,
+      {
+        id: createClientGroupId(),
+        name: `分组 ${currentGroups.length + 1}`,
+      },
+    ]);
+    setSelectedGroupIndex(nextGroupIndex);
+  }
+
+  function handleDeleteGroup(groupIndex: number) {
+    const remainingGroups = groupDrafts.filter(
+      (_, currentIndex) => currentIndex !== groupIndex,
+    );
+    setGroupDrafts(remainingGroups);
+    setSelectedGroupIndex((currentIndex) => {
+      if (remainingGroups.length === 0) {
+        return 0;
+      }
+      if (currentIndex > groupIndex) {
+        return currentIndex - 1;
+      }
+      if (currentIndex >= remainingGroups.length) {
+        return remainingGroups.length - 1;
+      }
+      return currentIndex;
+    });
+  }
+
+  function handleMoveGroup(groupIndex: number, direction: -1 | 1) {
+    const targetIndex = groupIndex + direction;
+    if (targetIndex < 0 || targetIndex >= groupDrafts.length) {
+      return;
+    }
+    setGroupDrafts((currentGroups) => {
+      const nextGroups = [...currentGroups];
+      const [movedGroup] = nextGroups.splice(groupIndex, 1);
+      nextGroups.splice(targetIndex, 0, movedGroup);
+      return nextGroups;
+    });
+    setSelectedGroupIndex(targetIndex);
+  }
+
+  function updateGroupDraft(
+    groupIndex: number,
+    updater: (groupEntry: JobGroupDefinition) => JobGroupDefinition,
+  ) {
+    setGroupDrafts((currentGroups) =>
+      currentGroups.map((groupEntry, currentIndex) =>
+        currentIndex === groupIndex ? updater(groupEntry) : groupEntry,
+      ),
+    );
+  }
+
+  const selectedGroupDraft = useMemo(() => {
+    if (groupDrafts.length === 0) {
+      return null;
+    }
+    const clampedIndex = Math.min(
+      selectedGroupIndex,
+      groupDrafts.length - 1,
+    );
+    return {
+      index: clampedIndex,
+      group: groupDrafts[clampedIndex],
+    };
+  }, [groupDrafts, selectedGroupIndex]);
 
   async function handleTestProvider(providerId: string) {
     if (providerDraftsAreDirty) {
@@ -2189,15 +2543,89 @@ function App() {
                   <input
                     className="search"
                     aria-label="搜索任务"
-                    placeholder="搜索标题 / URL / 状态 / ID"
+                    placeholder="搜索标题 / URL / 分组 / 状态 / ID"
                     value={searchQuery}
                     onChange={(event) => setSearchQuery(event.target.value)}
                   />
                 </div>
 
+                {hasAnyGroupFilterChips && (
+                  <div
+                    className="group-filter-bar"
+                    role="toolbar"
+                    aria-label="按分组筛选任务"
+                  >
+                    <button
+                      type="button"
+                      className={
+                        groupFilter === "all"
+                          ? "chip group-filter-chip active"
+                          : "chip group-filter-chip"
+                      }
+                      aria-pressed={groupFilter === "all"}
+                      onClick={() => setGroupFilter("all")}
+                    >
+                      全部
+                    </button>
+                    {managedJobGroups.map((groupEntry) => {
+                      const filterKey = `id:${groupEntry.id}`;
+                      const isActive = groupFilter === filterKey;
+                      return (
+                        <button
+                          key={groupEntry.id}
+                          type="button"
+                          className={
+                            isActive
+                              ? "chip group-filter-chip active"
+                              : "chip group-filter-chip"
+                          }
+                          aria-pressed={isActive}
+                          title={groupEntry.name}
+                          onClick={() => setGroupFilter(filterKey)}
+                        >
+                          {groupEntry.name}
+                        </button>
+                      );
+                    })}
+                    {orphanGroupFilterOptions.map((option) => {
+                      const isActive = groupFilter === option.filterKey;
+                      return (
+                        <button
+                          key={option.filterKey}
+                          type="button"
+                          className={
+                            isActive
+                              ? "chip group-filter-chip active"
+                              : "chip group-filter-chip"
+                          }
+                          aria-pressed={isActive}
+                          title={`${option.label}（未在目录中）`}
+                          onClick={() => setGroupFilter(option.filterKey)}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                    {hasUngroupedJobs && (
+                      <button
+                        type="button"
+                        className={
+                          groupFilter === "ungrouped"
+                            ? "chip group-filter-chip active"
+                            : "chip group-filter-chip"
+                        }
+                        aria-pressed={groupFilter === "ungrouped"}
+                        onClick={() => setGroupFilter("ungrouped")}
+                      >
+                        未分组
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 {isLoading ? (
                   <div className="empty">加载中…</div>
-                ) : filteredJobs.length === 0 ? (
+                ) : jobs.length === 0 ? (
                   <div className="empty empty-card">
                     <div className="empty-icon" aria-hidden="true">
                       +
@@ -2217,6 +2645,25 @@ function App() {
                         onClick={() => openCreate("import")}
                       >
                         导入本地
+                      </button>
+                    </div>
+                  </div>
+                ) : filteredJobs.length === 0 ? (
+                  <div className="empty empty-card">
+                    <h3>没有匹配的任务</h3>
+                    <p>
+                      当前分组筛选或搜索没有结果。可切换「全部」分组，或清空搜索关键词。
+                    </p>
+                    <div className="empty-actions">
+                      <button
+                        className="btn secondary"
+                        type="button"
+                        onClick={() => {
+                          setGroupFilter("all");
+                          setSearchQuery("");
+                        }}
+                      >
+                        清除筛选
                       </button>
                     </div>
                   </div>
@@ -2244,6 +2691,16 @@ function App() {
                               {STATUS_LABEL[job.status]}
                             </span>
                           </div>
+                          {resolveJobGroupLabel(job.group, managedJobGroups) && (
+                            <div className="job-card-group">
+                              <span className="pill group-pill">
+                                {resolveJobGroupLabel(
+                                  job.group,
+                                  managedJobGroups,
+                                )}
+                              </span>
+                            </div>
+                          )}
                           <div className="job-title">{job.title}</div>
                           <div
                             className="progress-track"
@@ -2490,6 +2947,82 @@ function App() {
                             <article className="card soft">
                               <h3 className="visually-hidden">来源概览</h3>
                               <dl className="meta-list">
+                                <div className="job-group-field-row">
+                                  <dt>分组</dt>
+                                  <dd>
+                                    <label className="job-group-field">
+                                      <span className="visually-hidden">
+                                        任务分组
+                                      </span>
+                                      <select
+                                        className="job-group-select"
+                                        value={jobGroupDraft}
+                                        disabled={
+                                          isSavingJobGroup ||
+                                          selectedJob.status === "running"
+                                        }
+                                        title={
+                                          selectedJob.status === "running"
+                                            ? "任务运行期间不能修改分组"
+                                            : managedJobGroups.length === 0
+                                              ? "请先在设置 → 任务分组中创建分组"
+                                              : undefined
+                                        }
+                                        aria-label="任务分组"
+                                        onChange={(event) => {
+                                          void handleJobGroupSelectChange(
+                                            event.target.value,
+                                          );
+                                        }}
+                                      >
+                                        <option value="">未分组</option>
+                                        {managedJobGroups.map((groupEntry) => (
+                                          <option
+                                            key={groupEntry.id}
+                                            value={groupEntry.id}
+                                          >
+                                            {groupEntry.name}
+                                          </option>
+                                        ))}
+                                        {/* Preserve orphan free-text groups not yet in catalog. */}
+                                        {normalizeJobGroup(selectedJob.group) &&
+                                          !managedJobGroups.some(
+                                            (groupEntry) =>
+                                              groupEntry.id ===
+                                                normalizeJobGroup(
+                                                  selectedJob.group,
+                                                ) ||
+                                              groupEntry.name
+                                                .trim()
+                                                .toLowerCase() ===
+                                                (
+                                                  normalizeJobGroup(
+                                                    selectedJob.group,
+                                                  ) ?? ""
+                                                ).toLowerCase(),
+                                          ) && (
+                                            <option
+                                              value={
+                                                normalizeJobGroup(
+                                                  selectedJob.group,
+                                                ) ?? ""
+                                              }
+                                            >
+                                              {normalizeJobGroup(
+                                                selectedJob.group,
+                                              )}{" "}
+                                              （未在目录中）
+                                            </option>
+                                          )}
+                                      </select>
+                                    </label>
+                                    {managedJobGroups.length === 0 && (
+                                      <p className="muted small job-group-hint">
+                                        暂无分组目录。请到「设置 → 任务分组」添加后再选择。
+                                      </p>
+                                    )}
+                                  </dd>
+                                </div>
                                 <div>
                                   <dt>URL</dt>
                                   <dd className="mono">
@@ -3888,6 +4421,150 @@ function App() {
               </article>
               </div>
                 )}
+
+                {settingsSection === "groups" && (
+              <div
+                id="settings-panel-groups"
+                className="settings-section-panel"
+                role="tabpanel"
+                aria-labelledby="settings-nav-groups"
+              >
+              <article className="card settings-wide">
+                <div className="log-header">
+                  <div>
+                    <h2 className="visually-hidden">任务分组</h2>
+                    <p className="muted small settings-collection-hint">
+                      共 {groupDrafts.length} 个分组；列表顺序即筛选芯片顺序。删除后，原归属任务将变为未分组。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn secondary small"
+                    onClick={handleAddGroup}
+                  >
+                    添加分组
+                  </button>
+                </div>
+                <div className="settings-split">
+                  <div
+                    className="settings-item-list"
+                    role="listbox"
+                    aria-label="任务分组列表"
+                  >
+                    {groupDrafts.length === 0 ? (
+                      <div className="settings-item-empty muted">
+                        还没有分组，点击「添加分组」开始整理任务。
+                      </div>
+                    ) : (
+                      groupDrafts.map((groupEntry, index) => {
+                        const isSelected =
+                          selectedGroupDraft?.index === index;
+                        return (
+                          <button
+                            key={groupEntry.id}
+                            type="button"
+                            role="option"
+                            aria-selected={isSelected}
+                            className={
+                              isSelected
+                                ? "settings-item selected"
+                                : "settings-item"
+                            }
+                            onClick={() => setSelectedGroupIndex(index)}
+                          >
+                            <div className="settings-item-top">
+                              <strong>
+                                {groupEntry.name.trim() || "未命名分组"}
+                              </strong>
+                            </div>
+                            <div
+                              className="settings-item-sub muted small mono"
+                              title={groupEntry.id}
+                            >
+                              {groupEntry.id}
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                  <div className="settings-item-detail">
+                    {selectedGroupDraft ? (
+                      <div className="profile-editor settings-detail-editor">
+                        <div className="settings-detail-title">
+                          <strong>
+                            {selectedGroupDraft.group.name.trim() ||
+                              "未命名分组"}
+                          </strong>
+                          <span className="muted small mono">
+                            {selectedGroupDraft.group.id}
+                          </span>
+                        </div>
+                        <label>
+                          <span>名称</span>
+                          <input
+                            value={selectedGroupDraft.group.name}
+                            maxLength={80}
+                            onChange={(event) =>
+                              updateGroupDraft(
+                                selectedGroupDraft.index,
+                                (groupEntry) => ({
+                                  ...groupEntry,
+                                  name: event.target.value,
+                                }),
+                              )
+                            }
+                            placeholder="例如：学习笔记"
+                          />
+                        </label>
+                        <p className="muted small">
+                          分组 ID 在创建后保持稳定；重命名只改显示名称，不会打散已归属任务。
+                        </p>
+                        <div className="detail-actions">
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            disabled={selectedGroupDraft.index === 0}
+                            onClick={() =>
+                              handleMoveGroup(selectedGroupDraft.index, -1)
+                            }
+                          >
+                            上移
+                          </button>
+                          <button
+                            type="button"
+                            className="btn secondary small"
+                            disabled={
+                              selectedGroupDraft.index >=
+                              groupDrafts.length - 1
+                            }
+                            onClick={() =>
+                              handleMoveGroup(selectedGroupDraft.index, 1)
+                            }
+                          >
+                            下移
+                          </button>
+                          <button
+                            type="button"
+                            className="btn danger small"
+                            onClick={() =>
+                              handleDeleteGroup(selectedGroupDraft.index)
+                            }
+                          >
+                            删除
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="settings-item-empty muted">
+                        选择或添加一个分组以开始编辑。
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </article>
+              </div>
+                )}
               </div>
             </div>
           </section>
@@ -3981,6 +4658,31 @@ function App() {
                   onChange={(event) => setFormTitle(event.target.value)}
                   placeholder="便于列表识别"
                 />
+              </label>
+
+              <label>
+                <span>分组（可选）</span>
+                <select
+                  value={formGroup}
+                  onChange={(event) => setFormGroup(event.target.value)}
+                  title={
+                    managedJobGroups.length === 0
+                      ? "请先在设置 → 任务分组中创建分组"
+                      : undefined
+                  }
+                >
+                  <option value="">未分组</option>
+                  {managedJobGroups.map((groupEntry) => (
+                    <option key={groupEntry.id} value={groupEntry.id}>
+                      {groupEntry.name}
+                    </option>
+                  ))}
+                </select>
+                {managedJobGroups.length === 0 && (
+                  <span className="muted small">
+                    暂无分组目录。可在「设置 → 任务分组」中添加。
+                  </span>
+                )}
               </label>
 
               {createMode === "live" && (
