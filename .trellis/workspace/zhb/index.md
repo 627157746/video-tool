@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
+- **Total Sessions**: 7
 - **Last Active**: 2026-07-21
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~207 | Active |
+| `journal-1.md` | ~240 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-07-21 | Provider multi-model and fixed toast | `6c24785` | `main` |
 | 6 | 2026-07-21 | Modernize UI and theme system | `094f04d` | `main` |
 | 5 | 2026-07-20 | 转写语言下拉选择与任务级覆盖 | `3bda8aa` | `main` |
 | 4 | 2026-07-20 | Markdown summary full-width render | `d5c6837` | `main` |

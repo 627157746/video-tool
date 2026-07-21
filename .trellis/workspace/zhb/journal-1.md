@@ -205,3 +205,36 @@ Modernized the desktop UI design system, added system/light/dark themes with acc
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Provider multi-model and fixed toast
+
+**Date**: 2026-07-21
+**Task**: Provider multi-model and fixed toast
+**Branch**: `main`
+
+### Summary
+
+Provider profiles support models list + job model switch; status/error toasts are fixed viewport so save feedback remains visible when scrolled. Validated with cargo test/clippy/typecheck/build.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6c24785` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
