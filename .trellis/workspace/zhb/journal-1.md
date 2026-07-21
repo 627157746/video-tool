@@ -238,3 +238,36 @@ Provider profiles support models list + job model switch; status/error toasts ar
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Job Provider/model overrides and UI fix
+
+**Date**: 2026-07-21
+**Task**: Job Provider/model overrides and UI fix
+**Branch**: `main`
+
+### Summary
+
+Jobs can follow defaults or pin Provider/model/template; existing jobs edit via update_job_pipeline; fixed summarize-config layout. Validated with cargo test/clippy and pnpm typecheck/build.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a27aba2` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
