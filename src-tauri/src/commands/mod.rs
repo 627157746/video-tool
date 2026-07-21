@@ -4,7 +4,7 @@ use crate::models::{
     CreateDownloadJobRequest, CreateImportJobRequest, CreateLiveRecordJobRequest, ExportJobRequest,
     Job, JobKind, JobListItem, JobLogRequest, JobSource, PipelineOptions,
     RetryTranscriptSegmentRequest, RunJobRequest, SaveConfigRequest, SelectSegmentsRequest,
-    TestProviderRequest, UpdateJobPipelineRequest,
+    TestProviderRequest, UpdateJobPipelineRequest, UpdateJobTitleRequest,
 };
 use crate::pipeline::{self, RunnerState};
 use crate::sidecar::SidecarStatus;
@@ -365,6 +365,42 @@ pub fn select_job_segments(
     use tauri::Emitter;
     let _ = app.emit("job-updated", &job);
     pipeline::paths::remove_downstream_artifacts(&job_dir, &crate::models::JobStep::Transcribe)?;
+    Ok(job)
+}
+
+#[tauri::command]
+pub fn update_job_title(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: UpdateJobTitleRequest,
+) -> AppResult<Job> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    // Runner owns the live Job snapshot; concurrent disk writes can clobber a
+    // rename that lands between progress updates.
+    if state.runner.is_job_running(&request.job_id) {
+        return Err(AppError::message("任务运行期间不能修改标题"));
+    }
+
+    let config = state.config.lock().expect("config lock");
+    let mut job = workspace::load_job(config.workspace_path(), &request.job_id)?;
+
+    let next_title = normalize_optional_id(request.title);
+    let current_title = job
+        .source
+        .title
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    if current_title == next_title {
+        return Ok(job);
+    }
+
+    job.source.title = next_title;
+    job.updated_at = chrono::Utc::now();
+    workspace::save_job(config.workspace_path(), &job)?;
+    use tauri::Emitter;
+    let _ = app.emit("job-updated", &job);
     Ok(job)
 }
 

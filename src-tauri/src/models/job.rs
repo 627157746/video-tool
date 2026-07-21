@@ -233,6 +233,15 @@ pub struct UpdateJobPipelineRequest {
     pub model: Option<String>,
 }
 
+/// Rename a Job display title.
+/// Empty / whitespace-only titles clear the custom title so list/detail fall
+/// back to URL, local path, or Job id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateJobTitleRequest {
+    pub job_id: String,
+    pub title: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportJobRequest {
     pub job_id: String,

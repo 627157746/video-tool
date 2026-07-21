@@ -9,6 +9,7 @@ import type {
   SaveConfigRequest,
   SidecarStatus,
   UpdateJobPipelineRequest,
+  UpdateJobTitleRequest,
 } from "./types";
 
 export async function getAppInfo(): Promise<AppInfo> {
@@ -131,6 +132,12 @@ export async function updateJobPipeline(
   request: UpdateJobPipelineRequest,
 ): Promise<Job> {
   return invoke<Job>("update_job_pipeline", { request });
+}
+
+export async function updateJobTitle(
+  request: UpdateJobTitleRequest,
+): Promise<Job> {
+  return invoke<Job>("update_job_title", { request });
 }
 
 export async function exportJob(

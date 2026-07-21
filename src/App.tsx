@@ -26,6 +26,7 @@ import {
   stopRecording,
   testProvider,
   updateJobPipeline,
+  updateJobTitle,
 } from "./api";
 import type {
   AppConfigPublic,
@@ -62,6 +63,14 @@ type SettingsSection =
   | "providers"
   | "templates"
   | "sidecars";
+type JobDetailSection =
+  | "overview"
+  | "pipeline"
+  | "summarize"
+  | "segments"
+  | "logs"
+  | "summary"
+  | "transcript";
 type SettingsPathPickerId =
   | "workspace"
   | "transcribe-model"
@@ -106,6 +115,48 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
     id: "sidecars",
     label: "Sidecar 工具",
     description: "可选覆盖可执行路径，并查看当前解析结果。解析顺序：内置 → 配置路径 → PATH。",
+  },
+];
+
+const JOB_DETAIL_SECTIONS: ReadonlyArray<{
+  id: JobDetailSection;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: "overview",
+    label: "来源概览",
+    description: "任务来源、进度、媒体文件与所用工具。",
+  },
+  {
+    id: "pipeline",
+    label: "流水线",
+    description: "查看各步骤状态，按步骤重试或继续运行。",
+  },
+  {
+    id: "summarize",
+    label: "总结配置",
+    description: "为本任务指定 Provider、模型与总结模板；空值跟随全局默认。",
+  },
+  {
+    id: "segments",
+    label: "总结选段",
+    description: "勾选参与合并与总结的转写分段；改选后需重跑合并与总结。",
+  },
+  {
+    id: "logs",
+    label: "日志",
+    description: "按阶段查看下载、录制、转写、合并与总结日志。",
+  },
+  {
+    id: "summary",
+    label: "Markdown 总结",
+    description: "查看本任务生成的 Markdown 总结文档。",
+  },
+  {
+    id: "transcript",
+    label: "合并字幕",
+    description: "查看合并后的字幕/转写原文。",
   },
 ];
 
@@ -479,6 +530,9 @@ function App() {
   const [jobModel, setJobModel] = useState("");
   const [jobTemplateId, setJobTemplateId] = useState("");
   const [isSavingJobPipeline, setIsSavingJobPipeline] = useState(false);
+  const [jobTitleDraft, setJobTitleDraft] = useState("");
+  const [isSavingJobTitle, setIsSavingJobTitle] = useState(false);
+  const jobTitleDraftRef = useRef("");
 
   const [settingsWorkspace, setSettingsWorkspace] = useState("");
   const [settingsSegmentMinutes, setSettingsSegmentMinutes] = useState(30);
@@ -503,6 +557,8 @@ function App() {
   const [selectedTemplateIndex, setSelectedTemplateIndex] = useState(0);
   const [settingsSection, setSettingsSection] =
     useState<SettingsSection>("pipeline");
+  const [jobDetailSection, setJobDetailSection] =
+    useState<JobDetailSection>("overview");
   const [themePreferences, setThemePreferences] = useState<ThemePreferences>(() =>
     loadThemePreferences(),
   );
@@ -622,6 +678,7 @@ function App() {
     selectedJobRef.current = null;
     setSelectedJobId(null);
     setSelectedJob(null);
+    setJobDetailSection("overview");
     setLogText("");
     setTranscriptText("");
     setSummaryText("");
@@ -640,6 +697,7 @@ function App() {
         setSelectedJobId(jobId);
         selectedJobRef.current = null;
         setSelectedJob(null);
+        setJobDetailSection("overview");
         setLogText("正在加载…");
         setTranscriptText("");
         setSummaryText("");
@@ -1046,6 +1104,8 @@ function App() {
       setJobProviderId("");
       setJobModel("");
       setJobTemplateId("");
+      setJobTitleDraft("");
+      jobTitleDraftRef.current = "";
       return;
     }
     setJobProviderId(selectedJob.pipeline.provider_profile_id ?? "");
@@ -1057,6 +1117,29 @@ function App() {
     selectedJob?.pipeline.model,
     selectedJob?.pipeline.template_id,
   ]);
+
+  useEffect(() => {
+    if (!selectedJob) {
+      setJobTitleDraft("");
+      jobTitleDraftRef.current = "";
+      return;
+    }
+    const savedTitle = selectedJob.source.title?.trim() ?? "";
+    setJobTitleDraft(savedTitle);
+    jobTitleDraftRef.current = savedTitle;
+  }, [selectedJob?.id]);
+
+  useEffect(() => {
+    if (!selectedJob || isSavingJobTitle) {
+      return;
+    }
+    const savedTitle = selectedJob.source.title?.trim() ?? "";
+    // Only apply backend title updates when the input is still clean.
+    if (jobTitleDraft === jobTitleDraftRef.current) {
+      setJobTitleDraft(savedTitle);
+      jobTitleDraftRef.current = savedTitle;
+    }
+  }, [isSavingJobTitle, jobTitleDraft, selectedJob?.source.title, selectedJob]);
 
   useEffect(() => {
     if (!createMode) {
@@ -1340,6 +1423,51 @@ function App() {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setIsSavingJobPipeline(false);
+    }
+  }
+
+  async function handleSaveJobTitle() {
+    if (!selectedJob || isSavingJobTitle) {
+      return;
+    }
+    if (selectedJob.status === "running") {
+      const currentTitle = selectedJob.source.title?.trim() ?? "";
+      setJobTitleDraft(currentTitle);
+      jobTitleDraftRef.current = currentTitle;
+      return;
+    }
+    const nextTitle = jobTitleDraft.trim();
+    const currentTitle = selectedJob.source.title?.trim() ?? "";
+    if (nextTitle === currentTitle) {
+      setJobTitleDraft(currentTitle);
+      jobTitleDraftRef.current = currentTitle;
+      return;
+    }
+
+    setIsSavingJobTitle(true);
+    setErrorMessage(null);
+    try {
+      const updatedJob = await updateJobTitle({
+        job_id: selectedJob.id,
+        title: nextTitle || null,
+      });
+      const savedTitle = updatedJob.source.title?.trim() ?? "";
+      selectedJobRef.current = updatedJob;
+      setSelectedJob(updatedJob);
+      setJobs((previousJobs) =>
+        previousJobs.map((entry) =>
+          entry.id === updatedJob.id ? jobToListItem(updatedJob) : entry,
+        ),
+      );
+      setJobTitleDraft(savedTitle);
+      jobTitleDraftRef.current = savedTitle;
+      setStatusMessage(
+        savedTitle ? `标题已更新：${savedTitle}` : "已清除自定义标题",
+      );
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSavingJobTitle(false);
     }
   }
 
@@ -1830,9 +1958,85 @@ function App() {
     return true;
   }
 
+  function handleJobDetailSectionNavigation(
+    currentSection: JobDetailSection,
+    pressedKey: string,
+    availableSections: ReadonlyArray<{ id: JobDetailSection }>,
+  ): boolean {
+    const currentIndex = availableSections.findIndex(
+      (section) => section.id === currentSection,
+    );
+    if (currentIndex < 0 || availableSections.length === 0) {
+      return false;
+    }
+    let nextIndex: number;
+    switch (pressedKey) {
+      case "ArrowUp":
+      case "ArrowLeft":
+        nextIndex =
+          (currentIndex - 1 + availableSections.length) %
+          availableSections.length;
+        break;
+      case "ArrowDown":
+      case "ArrowRight":
+        nextIndex = (currentIndex + 1) % availableSections.length;
+        break;
+      case "Home":
+        nextIndex = 0;
+        break;
+      case "End":
+        nextIndex = availableSections.length - 1;
+        break;
+      default:
+        return false;
+    }
+    const nextSection = availableSections[nextIndex];
+    setJobDetailSection(nextSection.id);
+    document.getElementById(`job-detail-nav-${nextSection.id}`)?.focus();
+    return true;
+  }
+
   const activeSettingsSectionMeta =
     SETTINGS_SECTIONS.find((section) => section.id === settingsSection) ??
     SETTINGS_SECTIONS[0];
+
+  const hasTranscriptSegments =
+    (selectedJob?.transcript_segments.length ?? 0) > 0;
+  const hasSummaryArtifact = Boolean(summaryText);
+  const hasTranscriptArtifact = Boolean(transcriptText);
+  const availableJobDetailSections = useMemo(
+    () =>
+      JOB_DETAIL_SECTIONS.filter((section) => {
+        if (section.id === "segments") {
+          return hasTranscriptSegments;
+        }
+        if (section.id === "summary") {
+          return hasSummaryArtifact;
+        }
+        if (section.id === "transcript") {
+          return hasTranscriptArtifact;
+        }
+        return true;
+      }),
+    [hasSummaryArtifact, hasTranscriptArtifact, hasTranscriptSegments],
+  );
+
+  useEffect(() => {
+    if (
+      !availableJobDetailSections.some(
+        (section) => section.id === jobDetailSection,
+      )
+    ) {
+      setJobDetailSection(availableJobDetailSections[0]?.id ?? "overview");
+    }
+  }, [availableJobDetailSections, jobDetailSection]);
+
+  const activeJobDetailSectionMeta =
+    availableJobDetailSections.find(
+      (section) => section.id === jobDetailSection,
+    ) ??
+    availableJobDetailSections[0] ??
+    JOB_DETAIL_SECTIONS[0];
 
   const settingsPathSelectionIsActive = activeSettingsPathPicker !== null;
 
@@ -2103,23 +2307,65 @@ function App() {
                     </div>
                     <h3>选择一个任务</h3>
                     <p className="muted">
-                      在左侧列表点选任务，查看流水线步骤、媒体产物与完整日志
+                      在左侧列表点选任务，用顶部分区查看流水线、配置、日志与产物
                     </p>
                   </div>
                 ) : (
                   <>
                     <div className="detail-header">
-                      <div>
+                      <div className="detail-header-main">
                         <div className="detail-kicker">
                           {KIND_LABEL[selectedJob.source.kind]} ·{" "}
                           <span className={`pill status-${selectedJob.status}`}>
                             {STATUS_LABEL[selectedJob.status]}
                           </span>
                         </div>
-                        <h2>{selectedJob.source.title || selectedJob.source.url || selectedJob.source.local_path || selectedJob.id}</h2>
+                        <label className="job-title-field">
+                          <span className="visually-hidden">任务标题</span>
+                          <input
+                            className="job-title-input"
+                            type="text"
+                            value={jobTitleDraft}
+                            placeholder={
+                              selectedJob.source.url ||
+                              selectedJob.source.local_path ||
+                              selectedJob.id
+                            }
+                            disabled={
+                              isSavingJobTitle ||
+                              selectedJob.status === "running"
+                            }
+                            title={
+                              selectedJob.status === "running"
+                                ? "任务运行期间不能修改标题"
+                                : undefined
+                            }
+                            aria-label="任务标题"
+                            onChange={(event) => {
+                              setJobTitleDraft(event.target.value);
+                            }}
+                            onBlur={() => {
+                              void handleSaveJobTitle();
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                (event.target as HTMLInputElement).blur();
+                              }
+                              if (event.key === "Escape") {
+                                event.preventDefault();
+                                const savedTitle =
+                                  selectedJob.source.title?.trim() ?? "";
+                                setJobTitleDraft(savedTitle);
+                                jobTitleDraftRef.current = savedTitle;
+                                (event.target as HTMLInputElement).blur();
+                              }
+                            }}
+                          />
+                        </label>
                         <div className="mono muted small">{selectedJob.id}</div>
                       </div>
-                      <div className="detail-actions">
+                      <div className="detail-actions job-detail-actions">
                         {selectedJob.source.kind === "live_record" &&
                           selectedJob.live_capture_active && (
                             <button
@@ -2163,332 +2409,519 @@ function App() {
                       </div>
                     </div>
 
-                    <div className="detail-grid">
-                      <article className="card soft">
-                        <h3>来源</h3>
-                        <dl className="meta-list">
-                          <div>
-                            <dt>URL</dt>
-                            <dd className="mono">
-                              {selectedJob.source.url || "—"}
-                            </dd>
-                          </div>
-                          <div>
-                            <dt>本地路径</dt>
-                            <dd className="mono">
-                              {selectedJob.source.local_path || "—"}
-                            </dd>
-                          </div>
-                          <div>
-                            <dt>进度</dt>
-                            <dd>{formatProgress(selectedJob.progress)}</dd>
-                          </div>
-                          <div>
-                            <dt>媒体文件</dt>
-                            <dd>
-                              {selectedJob.media_files?.length
-                                ? selectedJob.media_files.join(", ")
-                                : "—"}
-                            </dd>
-                          </div>
-                          <div>
-                            <dt>工具</dt>
-                            <dd className="mono small">
-                              {selectedJob.tool_path || "—"}
-                              {selectedJob.tool_version
-                                ? ` (${selectedJob.tool_version})`
-                                : ""}
-                            </dd>
-                          </div>
-                        </dl>
-                      </article>
-
-                      <article className="card soft">
-                        <h3>流水线</h3>
-                        <div className="step-list">
-                          {PIPELINE_STEPS.map((stepName) => {
-                            const step = getPipelineStepProgress(
-                              selectedJob,
-                              stepName,
-                            );
-                            return (
-                              <div key={step.step} className="step-row">
-                                <div>
-                                  <strong>{STEP_LABEL[step.step]}</strong>
-                                  <div className="muted small">
-                                    {step.detail || "—"}
-                                  </div>
-                                </div>
-                                <div className="step-actions">
-                                  <span className={`pill step-${step.status}`}>
-                                    {STEP_STATUS_LABEL[step.status]}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    className="chip"
-                                    disabled={
-                                      isBusy || selectedJob.status === "running"
-                                    }
-                                    onClick={() =>
-                                      void handleRun(selectedJob.id, step.step)
-                                    }
-                                  >
-                                    {getStepActionLabel(step.status)}
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                        <div className="pipeline-flags muted small">
-                          自动转写：
-                          {selectedJob.pipeline.auto_transcribe ? "开" : "关"} ·
-                          自动总结：
-                          {selectedJob.pipeline.auto_summarize ? "开" : "关"}
-                        </div>
-                      </article>
-
-                      <article className="card soft summarize-config-card">
-                        <div className="log-header">
-                          <div>
-                            <h3>总结配置</h3>
-                            <p className="muted small">
-                              选「使用全局默认 / Provider 默认」则跟随设置；指定后固化到本任务。保存后请重跑「AI 总结」。
-                            </p>
-                          </div>
-                        </div>
-                        <div className="form-grid summarize-config-form">
-                          <div className="two-col">
-                            <label>
-                              <span>Provider</span>
-                              <select
-                                value={jobProviderId}
-                                disabled={
-                                  selectedJob.status === "running" ||
-                                  isSavingJobPipeline
-                                }
-                                onChange={(event) =>
-                                  handleJobProviderChange(event.target.value)
-                                }
-                              >
-                                <option value="">使用全局默认</option>
-                                {config?.providers.map((provider) => (
-                                  <option key={provider.id} value={provider.id}>
-                                    {provider.name}
-                                    {provider.id ===
-                                    config.default_provider_profile_id
-                                      ? "（全局默认）"
-                                      : ""}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              <span>模型</span>
-                              <select
-                                value={jobModel}
-                                disabled={
-                                  selectedJob.status === "running" ||
-                                  isSavingJobPipeline
-                                }
-                                onChange={(event) =>
-                                  setJobModel(event.target.value)
-                                }
-                              >
-                                <option value="">使用 Provider 默认</option>
-                                {jobProviderModelOptions.map((modelName) => (
-                                  <option key={modelName} value={modelName}>
-                                    {modelName}
-                                    {modelName ===
-                                    selectedJobProvider?.default_model
-                                      ? "（档案默认）"
-                                      : ""}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                          </div>
-                          <label>
-                            <span>总结模板</span>
-                            <select
-                              value={jobTemplateId}
-                              disabled={
-                                selectedJob.status === "running" ||
-                                isSavingJobPipeline
-                              }
-                              onChange={(event) =>
-                                setJobTemplateId(event.target.value)
-                              }
-                            >
-                              <option value="">使用全局默认</option>
-                              {config?.templates.map((template) => (
-                                <option key={template.id} value={template.id}>
-                                  {template.name}
-                                  {template.id === config.default_template_id
-                                    ? "（全局默认）"
-                                    : ""}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <div className="detail-actions summarize-config-actions">
-                            <button
-                              type="button"
-                              className="btn secondary small"
-                              disabled={
-                                selectedJob.status === "running" ||
-                                isSavingJobPipeline ||
-                                !jobPipelineIsDirty
-                              }
-                              onClick={() => void handleSaveJobPipeline()}
-                            >
-                              {isSavingJobPipeline ? "保存中…" : "保存总结配置"}
-                            </button>
-                            {jobPipelineIsDirty ? (
-                              <span className="muted small">有未保存的修改</span>
-                            ) : (
-                              <span className="muted small">
-                                当前与任务已保存配置一致
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </article>
-                    </div>
-
-                    {selectedJob.transcript_segments.length > 0 && (
-                      <article className="card soft segment-card">
-                        <div className="log-header">
-                          <div>
-                            <h3>总结选段</h3>
-                            <p className="muted small">
-                              取消不需要的分段后，依次重试“合并字幕”和“AI 总结”。
-                            </p>
-                          </div>
-                          <span className="pill">
-                            已选 {selectedJob.selected_segment_ids.length} / {selectedJob.transcript_segments.length}
-                          </span>
-                        </div>
-                        <div className="segment-list">
-                          {selectedJob.transcript_segments.map((segment) => (
-                            <div key={segment.id} className="segment-row">
-                              <input
-                                type="checkbox"
-                                aria-label={`选择转写分段 ${segment.id}`}
-                                checked={selectedJob.selected_segment_ids.includes(segment.id)}
-                                disabled={
-                                  selectedJob.status === "running" ||
-                                  isUpdatingSegmentSelection
-                                }
-                                onChange={() => void handleToggleSegment(selectedJob, segment.id)}
-                              />
-                              <span>
-                                <strong>{segment.id}</strong>
-                                <span className="muted small">{segment.media_file}</span>
-                              </span>
-                              <div className="step-actions">
-                                <span className={`pill step-${segment.status}`}>
-                                  {STEP_STATUS_LABEL[segment.status]}
-                                </span>
-                                <button
-                                  type="button"
-                                  className="chip"
-                                  disabled={isBusy || selectedJob.status === "running"}
-                                  onClick={() => {
-                                    void handleRetrySegment(selectedJob.id, segment.id);
-                                  }}
-                                >
-                                  重试转写
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </article>
-                    )}
-
                     {selectedJob.error_message && (
                       <div className="banner error inline">
                         {selectedJob.error_message}
                       </div>
                     )}
 
-                    <article className="card soft log-card">
-                      <div className="log-header">
-                        <h3>日志</h3>
-                        <div className="log-tabs" role="tablist" aria-label="任务日志">
-                          {LOG_NAMES.map((name) => (
+                    <div className="job-detail-layout">
+                      <nav
+                        className="job-detail-tabs"
+                        role="tablist"
+                        aria-label="任务详情分区"
+                        aria-orientation="horizontal"
+                      >
+                        {availableJobDetailSections.map((section) => {
+                          const isActive = jobDetailSection === section.id;
+                          const sectionCountLabel =
+                            section.id === "segments"
+                              ? String(
+                                  selectedJob.selected_segment_ids.length,
+                                )
+                              : null;
+                          return (
                             <button
-                              key={name}
-                              id={`log-tab-${name}`}
+                              key={section.id}
+                              id={`job-detail-nav-${section.id}`}
                               type="button"
                               role="tab"
-                              aria-selected={logName === name}
-                              aria-controls="job-log-panel"
-                              tabIndex={logName === name ? 0 : -1}
+                              aria-selected={isActive}
+                              aria-controls={`job-detail-panel-${section.id}`}
+                              tabIndex={isActive ? 0 : -1}
                               className={
-                                logName === name ? "chip active" : "chip"
+                                isActive
+                                  ? "job-detail-tab active"
+                                  : "job-detail-tab"
                               }
-                              onClick={() => {
-                                setLogName(name);
-                                void reloadLog(selectedJob.id, name);
-                              }}
+                              onClick={() => setJobDetailSection(section.id)}
                               onKeyDown={(event) => {
                                 if (
-                                  handleLogTabNavigation(
-                                    selectedJob.id,
-                                    name,
+                                  handleJobDetailSectionNavigation(
+                                    jobDetailSection,
                                     event.key,
+                                    availableJobDetailSections,
                                   )
                                 ) {
                                   event.preventDefault();
                                 }
                               }}
                             >
-                              {name}
+                              <span className="job-detail-tab-label">
+                                {section.label}
+                              </span>
+                              {sectionCountLabel != null && (
+                                <span className="job-detail-tab-count">
+                                  {sectionCountLabel}
+                                </span>
+                              )}
                             </button>
-                          ))}
-                        </div>
-                      </div>
-                      <pre
-                        id="job-log-panel"
-                        className="log-view"
-                        role="tabpanel"
-                        aria-labelledby={`log-tab-${logName}`}
-                        tabIndex={0}
-                      >
-                        {logText}
-                      </pre>
-                    </article>
+                          );
+                        })}
+                      </nav>
 
-                    {(transcriptText || summaryText) && (
-                      <div className="artifact-stack">
-                        {summaryText && (
-                          <article className="card soft summary-card">
-                            <div className="artifact-card-header">
-                              <h3>Markdown 总结</h3>
-                              <span className="muted small">可读文档视图</span>
-                            </div>
-                            <div className="markdown-view">
-                              <ReactMarkdown>
-                                {unwrapOuterMarkdownFence(summaryText)}
-                              </ReactMarkdown>
-                            </div>
-                          </article>
+                      <div className="job-detail-main">
+                        <div className="settings-section-intro">
+                          <h2 id={`job-detail-panel-title-${jobDetailSection}`}>
+                            {activeJobDetailSectionMeta.label}
+                          </h2>
+                          <p className="muted small">
+                            {activeJobDetailSectionMeta.description}
+                          </p>
+                        </div>
+
+                        {jobDetailSection === "overview" && (
+                          <div
+                            id="job-detail-panel-overview"
+                            className="settings-section-panel"
+                            role="tabpanel"
+                            aria-labelledby="job-detail-nav-overview"
+                          >
+                            <article className="card soft">
+                              <h3 className="visually-hidden">来源概览</h3>
+                              <dl className="meta-list">
+                                <div>
+                                  <dt>URL</dt>
+                                  <dd className="mono">
+                                    {selectedJob.source.url || "—"}
+                                  </dd>
+                                </div>
+                                <div>
+                                  <dt>本地路径</dt>
+                                  <dd className="mono">
+                                    {selectedJob.source.local_path || "—"}
+                                  </dd>
+                                </div>
+                                <div>
+                                  <dt>进度</dt>
+                                  <dd>{formatProgress(selectedJob.progress)}</dd>
+                                </div>
+                                <div>
+                                  <dt>媒体文件</dt>
+                                  <dd>
+                                    {selectedJob.media_files?.length
+                                      ? selectedJob.media_files.join(", ")
+                                      : "—"}
+                                  </dd>
+                                </div>
+                                <div>
+                                  <dt>工具</dt>
+                                  <dd className="mono small">
+                                    {selectedJob.tool_path || "—"}
+                                    {selectedJob.tool_version
+                                      ? ` (${selectedJob.tool_version})`
+                                      : ""}
+                                  </dd>
+                                </div>
+                              </dl>
+                            </article>
+                          </div>
                         )}
-                        {transcriptText && (
-                          <article className="card soft transcript-card">
-                            <div className="artifact-card-header">
-                              <h3>合并字幕</h3>
-                              <span className="muted small">原文对照</span>
-                            </div>
-                            <pre className="artifact-view transcript-view">
-                              {transcriptText}
-                            </pre>
-                          </article>
+
+                        {jobDetailSection === "pipeline" && (
+                          <div
+                            id="job-detail-panel-pipeline"
+                            className="settings-section-panel"
+                            role="tabpanel"
+                            aria-labelledby="job-detail-nav-pipeline"
+                          >
+                            <article className="card soft">
+                              <h3 className="visually-hidden">流水线</h3>
+                              <div className="step-list">
+                                {PIPELINE_STEPS.map((stepName) => {
+                                  const step = getPipelineStepProgress(
+                                    selectedJob,
+                                    stepName,
+                                  );
+                                  return (
+                                    <div key={step.step} className="step-row">
+                                      <div>
+                                        <strong>{STEP_LABEL[step.step]}</strong>
+                                        <div className="muted small">
+                                          {step.detail || "—"}
+                                        </div>
+                                      </div>
+                                      <div className="step-actions">
+                                        <span
+                                          className={`pill step-${step.status}`}
+                                        >
+                                          {STEP_STATUS_LABEL[step.status]}
+                                        </span>
+                                        <button
+                                          type="button"
+                                          className="chip"
+                                          disabled={
+                                            isBusy ||
+                                            selectedJob.status === "running"
+                                          }
+                                          onClick={() =>
+                                            void handleRun(
+                                              selectedJob.id,
+                                              step.step,
+                                            )
+                                          }
+                                        >
+                                          {getStepActionLabel(step.status)}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              <div className="pipeline-flags muted small">
+                                自动转写：
+                                {selectedJob.pipeline.auto_transcribe
+                                  ? "开"
+                                  : "关"}{" "}
+                                · 自动总结：
+                                {selectedJob.pipeline.auto_summarize
+                                  ? "开"
+                                  : "关"}
+                              </div>
+                            </article>
+                          </div>
                         )}
+
+                        {jobDetailSection === "summarize" && (
+                          <div
+                            id="job-detail-panel-summarize"
+                            className="settings-section-panel"
+                            role="tabpanel"
+                            aria-labelledby="job-detail-nav-summarize"
+                          >
+                            <article className="card soft summarize-config-card">
+                              <h3 className="visually-hidden">总结配置</h3>
+                              <p className="muted small summarize-config-hint">
+                                选「使用全局默认 / Provider 默认」则跟随设置；指定后固化到本任务。保存后请重跑「AI 总结」。
+                              </p>
+                              <div className="form-grid summarize-config-form">
+                                <div className="two-col">
+                                  <label>
+                                    <span>Provider</span>
+                                    <select
+                                      value={jobProviderId}
+                                      disabled={
+                                        selectedJob.status === "running" ||
+                                        isSavingJobPipeline
+                                      }
+                                      onChange={(event) =>
+                                        handleJobProviderChange(
+                                          event.target.value,
+                                        )
+                                      }
+                                    >
+                                      <option value="">使用全局默认</option>
+                                      {config?.providers.map((provider) => (
+                                        <option
+                                          key={provider.id}
+                                          value={provider.id}
+                                        >
+                                          {provider.name}
+                                          {provider.id ===
+                                          config.default_provider_profile_id
+                                            ? "（全局默认）"
+                                            : ""}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                  <label>
+                                    <span>模型</span>
+                                    <select
+                                      value={jobModel}
+                                      disabled={
+                                        selectedJob.status === "running" ||
+                                        isSavingJobPipeline
+                                      }
+                                      onChange={(event) =>
+                                        setJobModel(event.target.value)
+                                      }
+                                    >
+                                      <option value="">使用 Provider 默认</option>
+                                      {jobProviderModelOptions.map(
+                                        (modelName) => (
+                                          <option
+                                            key={modelName}
+                                            value={modelName}
+                                          >
+                                            {modelName}
+                                            {modelName ===
+                                            selectedJobProvider?.default_model
+                                              ? "（档案默认）"
+                                              : ""}
+                                          </option>
+                                        ),
+                                      )}
+                                    </select>
+                                  </label>
+                                </div>
+                                <label>
+                                  <span>总结模板</span>
+                                  <select
+                                    value={jobTemplateId}
+                                    disabled={
+                                      selectedJob.status === "running" ||
+                                      isSavingJobPipeline
+                                    }
+                                    onChange={(event) =>
+                                      setJobTemplateId(event.target.value)
+                                    }
+                                  >
+                                    <option value="">使用全局默认</option>
+                                    {config?.templates.map((template) => (
+                                      <option
+                                        key={template.id}
+                                        value={template.id}
+                                      >
+                                        {template.name}
+                                        {template.id ===
+                                        config.default_template_id
+                                          ? "（全局默认）"
+                                          : ""}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <div className="detail-actions summarize-config-actions">
+                                  <button
+                                    type="button"
+                                    className="btn secondary small"
+                                    disabled={
+                                      selectedJob.status === "running" ||
+                                      isSavingJobPipeline ||
+                                      !jobPipelineIsDirty
+                                    }
+                                    onClick={() => void handleSaveJobPipeline()}
+                                  >
+                                    {isSavingJobPipeline
+                                      ? "保存中…"
+                                      : "保存总结配置"}
+                                  </button>
+                                  {jobPipelineIsDirty ? (
+                                    <span className="muted small">
+                                      有未保存的修改
+                                    </span>
+                                  ) : (
+                                    <span className="muted small">
+                                      当前与任务已保存配置一致
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </article>
+                          </div>
+                        )}
+
+                        {jobDetailSection === "segments" &&
+                          hasTranscriptSegments && (
+                            <div
+                              id="job-detail-panel-segments"
+                              className="settings-section-panel"
+                              role="tabpanel"
+                              aria-labelledby="job-detail-nav-segments"
+                            >
+                              <article className="card soft segment-card">
+                                <div className="log-header">
+                                  <div>
+                                    <h3 className="visually-hidden">
+                                      总结选段
+                                    </h3>
+                                    <p className="muted small">
+                                      取消不需要的分段后，依次重试“合并字幕”和“AI
+                                      总结”。
+                                    </p>
+                                  </div>
+                                  <span className="pill">
+                                    已选{" "}
+                                    {selectedJob.selected_segment_ids.length} /{" "}
+                                    {selectedJob.transcript_segments.length}
+                                  </span>
+                                </div>
+                                <div className="segment-list">
+                                  {selectedJob.transcript_segments.map(
+                                    (segment) => (
+                                      <div
+                                        key={segment.id}
+                                        className="segment-row"
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          aria-label={`选择转写分段 ${segment.id}`}
+                                          checked={selectedJob.selected_segment_ids.includes(
+                                            segment.id,
+                                          )}
+                                          disabled={
+                                            selectedJob.status === "running" ||
+                                            isUpdatingSegmentSelection
+                                          }
+                                          onChange={() =>
+                                            void handleToggleSegment(
+                                              selectedJob,
+                                              segment.id,
+                                            )
+                                          }
+                                        />
+                                        <span>
+                                          <strong>{segment.id}</strong>
+                                          <span className="muted small">
+                                            {segment.media_file}
+                                          </span>
+                                        </span>
+                                        <div className="step-actions">
+                                          <span
+                                            className={`pill step-${segment.status}`}
+                                          >
+                                            {
+                                              STEP_STATUS_LABEL[
+                                                segment.status
+                                              ]
+                                            }
+                                          </span>
+                                          <button
+                                            type="button"
+                                            className="chip"
+                                            disabled={
+                                              isBusy ||
+                                              selectedJob.status === "running"
+                                            }
+                                            onClick={() => {
+                                              void handleRetrySegment(
+                                                selectedJob.id,
+                                                segment.id,
+                                              );
+                                            }}
+                                          >
+                                            重试转写
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ),
+                                  )}
+                                </div>
+                              </article>
+                            </div>
+                          )}
+
+                        {jobDetailSection === "logs" && (
+                          <div
+                            id="job-detail-panel-logs"
+                            className="settings-section-panel"
+                            role="tabpanel"
+                            aria-labelledby="job-detail-nav-logs"
+                          >
+                            <article className="card soft log-card">
+                              <div className="log-header">
+                                <h3 className="visually-hidden">日志</h3>
+                                <div
+                                  className="log-tabs"
+                                  role="tablist"
+                                  aria-label="任务日志"
+                                >
+                                  {LOG_NAMES.map((name) => (
+                                    <button
+                                      key={name}
+                                      id={`log-tab-${name}`}
+                                      type="button"
+                                      role="tab"
+                                      aria-selected={logName === name}
+                                      aria-controls="job-log-panel"
+                                      tabIndex={logName === name ? 0 : -1}
+                                      className={
+                                        logName === name
+                                          ? "chip active"
+                                          : "chip"
+                                      }
+                                      onClick={() => {
+                                        setLogName(name);
+                                        void reloadLog(selectedJob.id, name);
+                                      }}
+                                      onKeyDown={(event) => {
+                                        if (
+                                          handleLogTabNavigation(
+                                            selectedJob.id,
+                                            name,
+                                            event.key,
+                                          )
+                                        ) {
+                                          event.preventDefault();
+                                        }
+                                      }}
+                                    >
+                                      {name}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                              <pre
+                                id="job-log-panel"
+                                className="log-view"
+                                role="tabpanel"
+                                aria-labelledby={`log-tab-${logName}`}
+                                tabIndex={0}
+                              >
+                                {logText}
+                              </pre>
+                            </article>
+                          </div>
+                        )}
+
+                        {jobDetailSection === "summary" &&
+                          hasSummaryArtifact && (
+                            <div
+                              id="job-detail-panel-summary"
+                              className="settings-section-panel"
+                              role="tabpanel"
+                              aria-labelledby="job-detail-nav-summary"
+                            >
+                              <article className="card soft summary-card">
+                                <div className="artifact-card-header">
+                                  <h3 className="visually-hidden">
+                                    Markdown 总结
+                                  </h3>
+                                  <span className="muted small">
+                                    可读文档视图
+                                  </span>
+                                </div>
+                                <div className="markdown-view">
+                                  <ReactMarkdown>
+                                    {unwrapOuterMarkdownFence(summaryText)}
+                                  </ReactMarkdown>
+                                </div>
+                              </article>
+                            </div>
+                          )}
+
+                        {jobDetailSection === "transcript" &&
+                          hasTranscriptArtifact && (
+                            <div
+                              id="job-detail-panel-transcript"
+                              className="settings-section-panel"
+                              role="tabpanel"
+                              aria-labelledby="job-detail-nav-transcript"
+                            >
+                              <article className="card soft transcript-card">
+                                <div className="artifact-card-header">
+                                  <h3 className="visually-hidden">合并字幕</h3>
+                                  <span className="muted small">原文对照</span>
+                                </div>
+                                <pre className="artifact-view transcript-view">
+                                  {transcriptText}
+                                </pre>
+                              </article>
+                            </div>
+                          )}
                       </div>
-                    )}
+                    </div>
                   </>
                 )}
               </section>

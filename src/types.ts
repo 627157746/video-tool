@@ -47,6 +47,12 @@ export interface UpdateJobPipelineRequest {
   model?: string | null;
 }
 
+export interface UpdateJobTitleRequest {
+  job_id: string;
+  /** Empty / null clears the custom title and falls back to URL / path / id. */
+  title?: string | null;
+}
+
 export interface JobListItem {
   id: string;
   status: JobStatus;
