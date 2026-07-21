@@ -172,3 +172,36 @@ Job Markdown 总结改为 react-markdown 渲染，并改为通栏大阅读区（
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Modernize UI and theme system
+
+**Date**: 2026-07-21
+**Task**: Modernize UI and theme system
+**Branch**: `main`
+
+### Summary
+
+Modernized the desktop UI design system, added system/light/dark themes with accent colors and localStorage, narrowed the jobs list, fixed settings fullscreen width, and synced frontend Trellis specs. Validated with pnpm typecheck and pnpm build.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `094f04d` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
