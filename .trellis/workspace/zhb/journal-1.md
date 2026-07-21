@@ -465,3 +465,36 @@ Added managed job group catalog, settings CRUD, create/detail select UI, list fi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: v0.2 P0-P4 MVP implementation
+
+**Date**: 2026-07-21
+**Task**: v0.2 P0-P4 MVP implementation
+**Branch**: `main`
+
+### Summary
+
+Completed full v0.2 roadmap MVP: global queue and workspace health; batch URL and cookies; error_code recovery wizard; glossary/chapterize/model presets; multi-template summarize and SQLite FTS search; dependency wizard, model scan, config import-export, update check. Validated with cargo test (75), clippy, fmt, and tsc. UX polish for fulltext search and model preset settings.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f97e704` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
