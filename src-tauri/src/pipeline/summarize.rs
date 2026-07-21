@@ -26,6 +26,7 @@ pub fn summarize_job(job_dir: &Path, job: &mut Job, config: &AppConfig) -> AppRe
     }
 
     let provider = resolve_provider(job, config)?;
+    let model_name = resolve_model(job, provider)?;
     let template = resolve_template(job, config)?;
     let api_key = config.resolve_api_key(provider).ok_or_else(|| {
         AppError::message(format!(
@@ -52,7 +53,7 @@ pub fn summarize_job(job_dir: &Path, job: &mut Job, config: &AppConfig) -> AppRe
         "summarize",
         &format!(
             "provider: {}\nprotocol: {}\nmodel: {}\nbase_url: {}\nprompt_preview:\n{}\n",
-            provider.id, provider.protocol, provider.default_model, provider.base_url, safe_prompt
+            provider.id, provider.protocol, model_name, provider.base_url, safe_prompt
         ),
     )?;
 
@@ -61,6 +62,7 @@ pub fn summarize_job(job_dir: &Path, job: &mut Job, config: &AppConfig) -> AppRe
         "openai" => call_openai(
             &client,
             provider,
+            &model_name,
             &api_key,
             &secret_values,
             &template.system_prompt,
@@ -69,6 +71,7 @@ pub fn summarize_job(job_dir: &Path, job: &mut Job, config: &AppConfig) -> AppRe
         "anthropic" => call_anthropic(
             &client,
             provider,
+            &model_name,
             &api_key,
             &secret_values,
             &template.system_prompt,
@@ -89,7 +92,7 @@ pub fn summarize_job(job_dir: &Path, job: &mut Job, config: &AppConfig) -> AppRe
         serde_json::to_string_pretty(&json!({
             "provider_profile_id": provider.id,
             "template_id": template.id,
-            "model": provider.default_model,
+            "model": model_name,
             "protocol": provider.protocol,
             "created_at": chrono::Utc::now(),
             "input_characters": character_count,
@@ -160,6 +163,28 @@ fn resolve_provider<'a>(job: &Job, config: &'a AppConfig) -> AppResult<&'a Provi
         .ok_or_else(|| AppError::message(format!("Provider 档案不存在: {provider_id}")))
 }
 
+/// Prefer job-level `pipeline.model`; otherwise use the provider default.
+/// Free-form model names are allowed so users can try models not yet listed.
+fn resolve_model(job: &Job, provider: &ProviderProfile) -> AppResult<String> {
+    if let Some(model_name) = job
+        .pipeline
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(model_name.to_string());
+    }
+    let default_model = provider.default_model.trim();
+    if default_model.is_empty() {
+        return Err(AppError::message(format!(
+            "Provider“{}”未配置默认模型",
+            provider.name
+        )));
+    }
+    Ok(default_model.to_string())
+}
+
 fn resolve_template<'a>(job: &Job, config: &'a AppConfig) -> AppResult<&'a SummaryTemplate> {
     let template_id = job
         .pipeline
@@ -190,6 +215,7 @@ fn build_client(proxy_url: Option<&str>) -> AppResult<Client> {
 fn call_openai(
     client: &Client,
     provider: &ProviderProfile,
+    model_name: &str,
     api_key: &str,
     secret_values: &[String],
     system_prompt: &str,
@@ -201,7 +227,7 @@ fn call_openai(
         .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header(CONTENT_TYPE, "application/json")
         .json(&json!({
-            "model": provider.default_model,
+            "model": model_name,
             "messages": [
                 { "role": "system", "content": system_prompt },
                 { "role": "user", "content": user_prompt }
@@ -219,6 +245,7 @@ fn call_openai(
 fn call_anthropic(
     client: &Client,
     provider: &ProviderProfile,
+    model_name: &str,
     api_key: &str,
     secret_values: &[String],
     system_prompt: &str,
@@ -231,7 +258,7 @@ fn call_anthropic(
         .header("anthropic-version", "2023-06-01")
         .header(CONTENT_TYPE, "application/json")
         .json(&json!({
-            "model": provider.default_model,
+            "model": model_name,
             "max_tokens": 4096,
             "system": system_prompt,
             "messages": [{ "role": "user", "content": user_prompt }]
@@ -364,6 +391,7 @@ mod tests {
             api_key: None,
             api_key_env: None,
             default_model: "m".into(),
+            models: vec!["m".into()],
             extra_headers: vec![],
         };
         assert_eq!(

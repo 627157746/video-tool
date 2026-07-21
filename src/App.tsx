@@ -245,6 +245,58 @@ function resolveExistingDefaultId(
   return availableIds.find((availableId) => availableId.trim())?.trim() ?? "";
 }
 
+/** Dedupe/trim model names and ensure the default model is present. */
+function normalizeProviderModels(
+  models: string[],
+  defaultModel: string,
+): { models: string[]; default_model: string } {
+  const seenModelNames = new Set<string>();
+  const normalizedModels: string[] = [];
+  for (const modelName of models) {
+    const trimmedModelName = modelName.trim();
+    if (!trimmedModelName || seenModelNames.has(trimmedModelName)) {
+      continue;
+    }
+    seenModelNames.add(trimmedModelName);
+    normalizedModels.push(trimmedModelName);
+  }
+  const trimmedDefaultModel = defaultModel.trim();
+  if (trimmedDefaultModel && !seenModelNames.has(trimmedDefaultModel)) {
+    normalizedModels.unshift(trimmedDefaultModel);
+  }
+  const resolvedDefaultModel =
+    trimmedDefaultModel || normalizedModels[0] || "";
+  return {
+    models: normalizedModels.length > 0 ? normalizedModels : [resolvedDefaultModel].filter(Boolean),
+    default_model: resolvedDefaultModel || normalizedModels[0] || "",
+  };
+}
+
+function providerModelsListText(models: string[]): string {
+  return models.join("\n");
+}
+
+function parseProviderModelsListText(text: string): string[] {
+  return text
+    .split(/[\n,]+/)
+    .map((modelName) => modelName.trim())
+    .filter(Boolean);
+}
+
+function resolveProviderModelOptions(
+  provider:
+    | { default_model: string; models?: string[] | null }
+    | undefined,
+): string[] {
+  if (!provider) {
+    return [];
+  }
+  return normalizeProviderModels(
+    provider.models ?? [],
+    provider.default_model,
+  ).models;
+}
+
 function PathPickerField({
   label,
   value,
@@ -347,6 +399,7 @@ function App() {
   const [autoSummarize, setAutoSummarize] = useState(false);
   const [autoStart, setAutoStart] = useState(true);
   const [formProviderId, setFormProviderId] = useState("");
+  const [formModel, setFormModel] = useState("");
   const [formTemplateId, setFormTemplateId] = useState("");
   const [formTranscribeLanguage, setFormTranscribeLanguage] = useState("auto");
 
@@ -427,21 +480,32 @@ function App() {
     setSettingsFfprobe(nextConfig.sidecar_paths.ffprobe ?? "");
     setSettingsStreamlink(nextConfig.sidecar_paths.streamlink ?? "");
     setSettingsTranscribe(nextConfig.sidecar_paths.transcribe ?? "");
-    setProviderDrafts(nextConfig.providers.map((provider) => ({
-      id: provider.id,
-      name: provider.name,
-      protocol: provider.protocol === "anthropic" ? "anthropic" : "openai",
-      base_url: provider.base_url,
-      api_key: null,
-      api_key_env: provider.api_key_env ?? null,
-      default_model: provider.default_model,
-      extra_headers: provider.extra_headers,
-    })));
+    setProviderDrafts(nextConfig.providers.map((provider) => {
+      const normalizedModels = normalizeProviderModels(
+        provider.models ?? [],
+        provider.default_model,
+      );
+      return {
+        id: provider.id,
+        name: provider.name,
+        protocol: provider.protocol === "anthropic" ? "anthropic" : "openai",
+        base_url: provider.base_url,
+        api_key: null,
+        api_key_env: provider.api_key_env ?? null,
+        default_model: normalizedModels.default_model,
+        models: normalizedModels.models,
+        extra_headers: provider.extra_headers,
+      };
+    }));
     setTemplateDrafts(nextConfig.templates);
     setFormSegmentMinutes(nextConfig.default_segment_minutes);
     setAutoTranscribe(nextConfig.default_auto_transcribe);
     setAutoSummarize(nextConfig.default_auto_summarize);
     setFormProviderId(nextConfig.default_provider_profile_id ?? "");
+    const defaultProvider = nextConfig.providers.find(
+      (provider) => provider.id === nextConfig.default_provider_profile_id,
+    ) ?? nextConfig.providers[0];
+    setFormModel(defaultProvider?.default_model ?? "");
     setFormTemplateId(nextConfig.default_template_id ?? "");
     setFormTranscribeLanguage(nextConfig.transcribe_language);
   }, []);
@@ -700,6 +764,17 @@ function App() {
     return () => window.clearInterval(interval);
   }, [loadJobDetail, selectedJob?.status, selectedJobId]);
 
+  // Success toasts auto-dismiss so fixed overlays do not linger after save.
+  useEffect(() => {
+    if (!statusMessage) {
+      return;
+    }
+    const dismissTimer = window.setTimeout(() => {
+      setStatusMessage(null);
+    }, 4_000);
+    return () => window.clearTimeout(dismissTimer);
+  }, [statusMessage]);
+
   const filteredJobs = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) {
@@ -739,31 +814,60 @@ function App() {
     if (!config) {
       return false;
     }
-    const persistedProfiles = config.providers.map((provider) => ({
-      id: provider.id,
-      name: provider.name,
-      protocol: provider.protocol === "anthropic" ? "anthropic" : "openai",
-      base_url: provider.base_url,
-      api_key_env: provider.api_key_env ?? null,
-      default_model: provider.default_model,
-      extra_headers: provider.extra_headers,
-      has_new_api_key: false,
-    }));
-    const draftProfiles = providerDrafts.map((provider) => ({
-      id: provider.id,
-      name: provider.name,
-      protocol: provider.protocol,
-      base_url: provider.base_url,
-      api_key_env: provider.api_key_env ?? null,
-      default_model: provider.default_model,
-      extra_headers: provider.extra_headers,
-      has_new_api_key: Boolean(provider.api_key?.trim()),
-    }));
+    const persistedProfiles = config.providers.map((provider) => {
+      const normalizedModels = normalizeProviderModels(
+        provider.models ?? [],
+        provider.default_model,
+      );
+      return {
+        id: provider.id,
+        name: provider.name,
+        protocol: provider.protocol === "anthropic" ? "anthropic" : "openai",
+        base_url: provider.base_url,
+        api_key_env: provider.api_key_env ?? null,
+        default_model: normalizedModels.default_model,
+        models: normalizedModels.models,
+        extra_headers: provider.extra_headers,
+        has_new_api_key: false,
+      };
+    });
+    const draftProfiles = providerDrafts.map((provider) => {
+      const normalizedModels = normalizeProviderModels(
+        provider.models,
+        provider.default_model,
+      );
+      return {
+        id: provider.id,
+        name: provider.name,
+        protocol: provider.protocol,
+        base_url: provider.base_url,
+        api_key_env: provider.api_key_env ?? null,
+        default_model: normalizedModels.default_model,
+        models: normalizedModels.models,
+        extra_headers: provider.extra_headers,
+        has_new_api_key: Boolean(provider.api_key?.trim()),
+      };
+    });
     return (
       settingsProxy !== (config.proxy_url ?? "") ||
       JSON.stringify(persistedProfiles) !== JSON.stringify(draftProfiles)
     );
   }, [config, providerDrafts, settingsProxy]);
+
+  const selectedCreateProvider = useMemo(() => {
+    if (!config) {
+      return undefined;
+    }
+    return (
+      config.providers.find((provider) => provider.id === formProviderId) ??
+      config.providers[0]
+    );
+  }, [config, formProviderId]);
+
+  const createProviderModelOptions = useMemo(
+    () => resolveProviderModelOptions(selectedCreateProvider),
+    [selectedCreateProvider],
+  );
 
   useEffect(() => {
     if (!createMode) {
@@ -779,7 +883,7 @@ function App() {
     const backgroundElementStates = new Map<HTMLElement, boolean>();
     const makeBackgroundInert = () => {
       const backgroundElements = document.querySelectorAll<HTMLElement>(
-        ".topbar, .banner-row, .content",
+        ".topbar, .content",
       );
       backgroundElements.forEach((element) => {
         if (!backgroundElementStates.has(element)) {
@@ -839,8 +943,21 @@ function App() {
     setAutoTranscribe(config?.default_auto_transcribe ?? true);
     setAutoSummarize(config?.default_auto_summarize ?? false);
     setAutoStart(true);
-    setFormProviderId(config?.default_provider_profile_id ?? "");
+    const nextProviderId = config?.default_provider_profile_id ?? "";
+    setFormProviderId(nextProviderId);
+    const defaultProvider =
+      config?.providers.find((provider) => provider.id === nextProviderId) ??
+      config?.providers[0];
+    setFormModel(defaultProvider?.default_model ?? "");
     setFormTemplateId(config?.default_template_id ?? "");
+  }
+
+  function handleCreateProviderChange(nextProviderId: string) {
+    setFormProviderId(nextProviderId);
+    const nextProvider = config?.providers.find(
+      (provider) => provider.id === nextProviderId,
+    );
+    setFormModel(nextProvider?.default_model ?? "");
   }
 
   function openCreate(mode: CreateMode) {
@@ -944,11 +1061,28 @@ function App() {
     setStatusMessage(null);
     setIsBusy(true);
 
+    const resolvedFormModel = (() => {
+      const trimmedModel = formModel.trim();
+      if (
+        createProviderModelOptions.length > 0 &&
+        trimmedModel &&
+        !createProviderModelOptions.includes(trimmedModel)
+      ) {
+        return createProviderModelOptions[0];
+      }
+      return (
+        trimmedModel ||
+        createProviderModelOptions[0] ||
+        selectedCreateProvider?.default_model ||
+        null
+      );
+    })();
     const pipeline = {
       auto_transcribe: autoTranscribe,
       auto_summarize: autoSummarize,
       provider_profile_id: formProviderId || null,
       template_id: formTemplateId || null,
+      model: resolvedFormModel,
       transcribe_language: formTranscribeLanguage,
     };
 
@@ -1144,10 +1278,18 @@ function App() {
     setErrorMessage(null);
     try {
       const previousWorkspace = config?.workspace_dir;
-      const normalizedProviderDrafts = providerDrafts.map((provider) => ({
-        ...provider,
-        id: provider.id.trim(),
-      }));
+      const normalizedProviderDrafts = providerDrafts.map((provider) => {
+        const normalizedModels = normalizeProviderModels(
+          provider.models,
+          provider.default_model,
+        );
+        return {
+          ...provider,
+          id: provider.id.trim(),
+          default_model: normalizedModels.default_model,
+          models: normalizedModels.models,
+        };
+      });
       const normalizedTemplateDrafts = templateDrafts.map((template) => ({
         ...template,
         id: template.id.trim(),
@@ -1217,6 +1359,57 @@ function App() {
     if (settingsDefaultProviderId === previousProviderId) {
       setSettingsDefaultProviderId(nextProviderId);
     }
+  }
+
+  function updateProviderDraft(
+    providerIndex: number,
+    updater: (provider: ProviderProfileInput) => ProviderProfileInput,
+  ) {
+    setProviderDrafts((providers) =>
+      providers.map((provider, currentIndex) =>
+        currentIndex === providerIndex ? updater(provider) : provider,
+      ),
+    );
+  }
+
+  function handleProviderModelsTextChange(
+    providerIndex: number,
+    modelsText: string,
+  ) {
+    updateProviderDraft(providerIndex, (provider) => {
+      const parsedModels = parseProviderModelsListText(modelsText);
+      const nextDefaultModel =
+        provider.default_model.trim() &&
+        parsedModels.includes(provider.default_model.trim())
+          ? provider.default_model.trim()
+          : (parsedModels[0] ?? "");
+      return {
+        ...provider,
+        models: parsedModels,
+        default_model: nextDefaultModel,
+      };
+    });
+  }
+
+  function handleProviderDefaultModelChange(
+    providerIndex: number,
+    nextDefaultModel: string,
+  ) {
+    updateProviderDraft(providerIndex, (provider) => {
+      const trimmedDefaultModel = nextDefaultModel.trim();
+      const nextModels = [...provider.models];
+      if (
+        trimmedDefaultModel &&
+        !nextModels.some((modelName) => modelName === trimmedDefaultModel)
+      ) {
+        nextModels.unshift(trimmedDefaultModel);
+      }
+      return {
+        ...provider,
+        default_model: nextDefaultModel,
+        models: nextModels,
+      };
+    });
   }
 
   function handleDeleteProvider(providerIndex: number) {
@@ -1419,9 +1612,9 @@ function App() {
       </header>
 
       {(errorMessage || statusMessage) && (
-        <div className="banner-row">
+        <div className="toast-stack" aria-live="polite">
           {errorMessage && (
-            <div className="banner error" role="alert">
+            <div className="banner toast error" role="alert">
               <span>{errorMessage}</span>
               <button
                 type="button"
@@ -1433,7 +1626,7 @@ function App() {
             </div>
           )}
           {statusMessage && (
-            <div className="banner ok" role="status" aria-live="polite">
+            <div className="banner toast ok" role="status">
               <span>{statusMessage}</span>
               <button
                 type="button"
@@ -2274,6 +2467,7 @@ function App() {
                       api_key: null,
                       api_key_env: "OPENAI_API_KEY",
                       default_model: "gpt-4o-mini",
+                      models: ["gpt-4o-mini", "gpt-4o"],
                       extra_headers: [],
                     }])}
                   >
@@ -2285,16 +2479,58 @@ function App() {
                     <div className="profile-editor" key={`${provider.id}-${index}`}>
                       <div className="two-col">
                         <label><span>ID</span><input value={provider.id} onChange={(event) => handleProviderIdChange(index, provider.id, event.target.value)} /></label>
-                        <label><span>名称</span><input value={provider.name} onChange={(event) => setProviderDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, name: event.target.value} : item))} /></label>
+                        <label><span>名称</span><input value={provider.name} onChange={(event) => updateProviderDraft(index, (item) => ({...item, name: event.target.value}))} /></label>
                       </div>
                       <div className="two-col">
-                        <label><span>协议</span><select value={provider.protocol} onChange={(event) => setProviderDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, protocol: event.target.value as "openai" | "anthropic"} : item))}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
-                        <label><span>默认模型</span><input value={provider.default_model} onChange={(event) => setProviderDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, default_model: event.target.value} : item))} /></label>
+                        <label><span>协议</span><select value={provider.protocol} onChange={(event) => updateProviderDraft(index, (item) => ({...item, protocol: event.target.value as "openai" | "anthropic"}))}><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
+                        <label>
+                          <span>默认模型</span>
+                          {provider.models.length > 0 ? (
+                            <select
+                              value={
+                                provider.models.includes(provider.default_model)
+                                  ? provider.default_model
+                                  : provider.models[0]
+                              }
+                              onChange={(event) =>
+                                handleProviderDefaultModelChange(index, event.target.value)
+                              }
+                            >
+                              {provider.models.map((modelName) => (
+                                <option key={modelName} value={modelName}>
+                                  {modelName}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              value={provider.default_model}
+                              onChange={(event) =>
+                                handleProviderDefaultModelChange(index, event.target.value)
+                              }
+                              placeholder="gpt-4o-mini"
+                            />
+                          )}
+                        </label>
                       </div>
-                      <label><span>Base URL</span><input value={provider.base_url} onChange={(event) => setProviderDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, base_url: event.target.value} : item))} /></label>
+                      <label>
+                        <span>可用模型（每行一个，或用逗号分隔）</span>
+                        <textarea
+                          rows={4}
+                          value={providerModelsListText(provider.models)}
+                          onChange={(event) =>
+                            handleProviderModelsTextChange(index, event.target.value)
+                          }
+                          placeholder={"gpt-4o-mini\ngpt-4o\no3-mini"}
+                        />
+                      </label>
+                      <div className="muted small">
+                        同一 Provider 共用 Base URL 与 API Key；创建任务时可在模型列表中切换。
+                      </div>
+                      <label><span>Base URL</span><input value={provider.base_url} onChange={(event) => updateProviderDraft(index, (item) => ({...item, base_url: event.target.value}))} /></label>
                       <div className="two-col">
-                        <label><span>API Key 环境变量</span><input value={provider.api_key_env ?? ""} onChange={(event) => setProviderDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, api_key_env: event.target.value || null} : item))} /></label>
-                        <label><span>API Key（留空保留原值）</span><input type="password" value={provider.api_key ?? ""} onChange={(event) => setProviderDrafts((items) => items.map((item, itemIndex) => itemIndex === index ? {...item, api_key: event.target.value || null} : item))} /></label>
+                        <label><span>API Key 环境变量</span><input value={provider.api_key_env ?? ""} onChange={(event) => updateProviderDraft(index, (item) => ({...item, api_key_env: event.target.value || null}))} /></label>
+                        <label><span>API Key（留空保留原值）</span><input type="password" value={provider.api_key ?? ""} onChange={(event) => updateProviderDraft(index, (item) => ({...item, api_key: event.target.value || null}))} /></label>
                       </div>
                       <div className="detail-actions">
                         <button
@@ -2496,20 +2732,66 @@ function App() {
               )}
 
               {autoSummarize && (
-                <div className="two-col">
-                  <label>
-                    <span>Provider</span>
-                    <select value={formProviderId} onChange={(event) => setFormProviderId(event.target.value)}>
-                      {config?.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-                    </select>
-                  </label>
+                <>
+                  <div className="two-col">
+                    <label>
+                      <span>Provider</span>
+                      <select
+                        value={formProviderId}
+                        onChange={(event) =>
+                          handleCreateProviderChange(event.target.value)
+                        }
+                      >
+                        {config?.providers.map((provider) => (
+                          <option key={provider.id} value={provider.id}>
+                            {provider.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>模型</span>
+                      {createProviderModelOptions.length > 0 ? (
+                        <select
+                          value={
+                            createProviderModelOptions.includes(formModel)
+                              ? formModel
+                              : createProviderModelOptions[0]
+                          }
+                          onChange={(event) => setFormModel(event.target.value)}
+                        >
+                          {createProviderModelOptions.map((modelName) => (
+                            <option key={modelName} value={modelName}>
+                              {modelName}
+                              {modelName === selectedCreateProvider?.default_model
+                                ? "（默认）"
+                                : ""}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          value={formModel}
+                          onChange={(event) => setFormModel(event.target.value)}
+                          placeholder="模型 ID"
+                        />
+                      )}
+                    </label>
+                  </div>
                   <label>
                     <span>总结模板</span>
-                    <select value={formTemplateId} onChange={(event) => setFormTemplateId(event.target.value)}>
-                      {config?.templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                    <select
+                      value={formTemplateId}
+                      onChange={(event) => setFormTemplateId(event.target.value)}
+                    >
+                      {config?.templates.map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.name}
+                        </option>
+                      ))}
                     </select>
                   </label>
-                </div>
+                </>
               )}
 
               {createMode === "live" && (

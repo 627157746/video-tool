@@ -18,7 +18,13 @@ pub struct ProviderProfile {
     pub base_url: String,
     pub api_key: Option<String>,
     pub api_key_env: Option<String>,
+    /// Default model used when a job does not override `pipeline.model`.
     pub default_model: String,
+    /// Available models under this provider (same base URL / API key).
+    /// Older configs without this field deserialize as empty and are normalized
+    /// from `default_model` on load/validate.
+    #[serde(default)]
+    pub models: Vec<String>,
     #[serde(default)]
     pub extra_headers: Vec<(String, String)>,
 }
@@ -95,6 +101,7 @@ impl Default for AppConfig {
                     api_key: None,
                     api_key_env: Some("OPENAI_API_KEY".to_string()),
                     default_model: "gpt-4o-mini".to_string(),
+                    models: vec!["gpt-4o-mini".to_string(), "gpt-4o".to_string()],
                     extra_headers: vec![],
                 },
                 ProviderProfile {
@@ -105,6 +112,10 @@ impl Default for AppConfig {
                     api_key: None,
                     api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
                     default_model: "claude-sonnet-4-5".to_string(),
+                    models: vec![
+                        "claude-sonnet-4-5".to_string(),
+                        "claude-opus-4-5".to_string(),
+                    ],
                     extra_headers: vec![],
                 },
             ],
@@ -177,12 +188,14 @@ impl AppConfig {
         let path = app_config_path()?;
         if path.exists() {
             let raw = fs::read_to_string(&path)?;
-            let config: AppConfig = serde_json::from_str(&raw)?;
+            let mut config: AppConfig = serde_json::from_str(&raw)?;
+            config.normalize_provider_models();
             config.validate()?;
             return Ok(config);
         }
 
-        let config = AppConfig::default();
+        let mut config = AppConfig::default();
+        config.normalize_provider_models();
         config.validate()?;
         config.save()?;
         Ok(config)
@@ -192,6 +205,14 @@ impl AppConfig {
         let path = app_config_path()?;
         storage::write_json_atomically(&path, self)?;
         Ok(())
+    }
+
+    /// Ensure every provider has a non-empty `models` list that includes
+    /// `default_model`. Used for backward-compatible configs and draft saves.
+    pub fn normalize_provider_models(&mut self) {
+        for provider in &mut self.providers {
+            normalize_provider_models(provider);
+        }
     }
 
     pub fn candidate_with_update(&self, request: SaveConfigRequest) -> AppResult<Self> {
@@ -280,6 +301,7 @@ impl AppConfig {
                 }
             }
             candidate.providers = providers;
+            candidate.normalize_provider_models();
         }
         if let Some(templates) = request.templates {
             candidate.templates = templates;
@@ -327,6 +349,30 @@ impl AppConfig {
                 return Err(AppError::message(
                     "Provider ID、名称、Base URL 和默认模型不能为空",
                 ));
+            }
+            if provider.models.is_empty() {
+                return Err(AppError::message(format!(
+                    "Provider {} 至少需要一个可用模型",
+                    provider.id
+                )));
+            }
+            for model_name in &provider.models {
+                if model_name.trim().is_empty() {
+                    return Err(AppError::message(format!(
+                        "Provider {} 的模型列表不能包含空名称",
+                        provider.id
+                    )));
+                }
+            }
+            if !provider
+                .models
+                .iter()
+                .any(|model_name| model_name == &provider.default_model)
+            {
+                return Err(AppError::message(format!(
+                    "Provider {} 的默认模型必须在模型列表中",
+                    provider.id
+                )));
             }
             if !provider_ids.insert(provider.id.as_str()) {
                 return Err(AppError::message(format!(
@@ -454,6 +500,7 @@ impl AppConfig {
                     api_key_env: provider.api_key_env.clone(),
                     has_api_key: self.resolve_api_key(provider).is_some(),
                     default_model: provider.default_model.clone(),
+                    models: provider.models.clone(),
                     extra_headers: provider
                         .extra_headers
                         .iter()
@@ -487,6 +534,7 @@ pub struct ProviderProfilePublic {
     pub api_key_env: Option<String>,
     pub has_api_key: bool,
     pub default_model: String,
+    pub models: Vec<String>,
     pub extra_headers: Vec<(String, String)>,
 }
 
@@ -525,6 +573,34 @@ fn empty_to_none(value: String) -> Option<String> {
     } else {
         Some(trimmed)
     }
+}
+
+/// Trim model names, drop blanks/duplicates (order-preserving), and ensure
+/// `default_model` is present and non-empty when possible.
+fn normalize_provider_models(provider: &mut ProviderProfile) {
+    let mut seen_model_names = HashSet::new();
+    let mut normalized_models = Vec::new();
+    for model_name in provider.models.drain(..) {
+        let trimmed_model_name = model_name.trim().to_string();
+        if trimmed_model_name.is_empty() {
+            continue;
+        }
+        if seen_model_names.insert(trimmed_model_name.clone()) {
+            normalized_models.push(trimmed_model_name);
+        }
+    }
+
+    let trimmed_default_model = provider.default_model.trim().to_string();
+    if !trimmed_default_model.is_empty() {
+        provider.default_model = trimmed_default_model.clone();
+        if !seen_model_names.contains(&trimmed_default_model) {
+            normalized_models.insert(0, trimmed_default_model);
+        }
+    } else if let Some(first_model) = normalized_models.first() {
+        provider.default_model = first_model.clone();
+    }
+
+    provider.models = normalized_models;
 }
 
 fn is_sensitive_header_name(name: &str) -> bool {
@@ -571,6 +647,21 @@ mod tests {
             .expect_err("duplicate IDs must fail");
         assert!(error.to_string().contains("Provider ID 重复"));
         assert_ne!(original.providers[0].id, original.providers[1].id);
+    }
+
+    #[test]
+    fn normalizes_legacy_provider_without_models_list() {
+        let mut original = AppConfig::default();
+        original.providers[0].models = vec![];
+        original.providers[0].default_model = "gpt-4o-mini".into();
+        original.normalize_provider_models();
+        assert_eq!(
+            original.providers[0].models,
+            vec!["gpt-4o-mini".to_string()]
+        );
+        original
+            .validate()
+            .expect("legacy provider must validate after normalize");
     }
 
     #[test]

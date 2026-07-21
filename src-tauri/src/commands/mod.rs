@@ -500,6 +500,7 @@ fn merge_pipeline(config: &AppConfig, request: Option<PipelineOptions>) -> Pipel
         auto_summarize: config.default_auto_summarize,
         provider_profile_id: config.default_provider_profile_id.clone(),
         template_id: config.default_template_id.clone(),
+        model: None,
         transcribe_language: None,
     });
 
@@ -509,6 +510,13 @@ fn merge_pipeline(config: &AppConfig, request: Option<PipelineOptions>) -> Pipel
     if pipeline.template_id.is_none() {
         pipeline.template_id = config.default_template_id.clone();
     }
+    // Empty/whitespace model means "use the provider default"; store as None.
+    pipeline.model = pipeline
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
     // `None` (or empty/whitespace) means "follow the global config"; resolve it
     // eagerly so the persisted job snapshot records the effective language and
     // transcribe.rs can read a single source of truth at run time.

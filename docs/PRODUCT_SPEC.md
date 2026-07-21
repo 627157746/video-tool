@@ -64,7 +64,7 @@
 | 流水线 | 创建任务时可勾选：下载/录制后自动转写、转写后自动总结 |
 | 分段批量转写 | 多段可排队，状态可追踪 |
 | 单步重试 | 可只重跑下载 / 转写 / 合并 / 总结中的某一步 |
-| Provider | 多配置档案、默认档案、任务可覆盖、连通测试 |
+| Provider | 多配置档案、每档案多模型列表、默认档案/默认模型、任务可覆盖模型、连通测试 |
 | 模板 | 多 Markdown 模板档案、变量替换、内置 2～3 个示例 |
 | 配置 | 混合配置 + 环境变量覆盖 Key；工作区与 Key 分离 |
 | 代理 | 总结出网可配代理 |
@@ -295,15 +295,17 @@ ingest（download | live-record | import-local）
 | `protocol` | `openai` \| `anthropic` |
 | `base_url` | 自定义 API 地址（自建中转/网关） |
 | `api_key` / `api_key_env` | 直填或环境变量名；env 优先 |
-| `default_model` | 默认模型名 |
+| `models` | 该档案下可用模型列表（同一 Key / Base URL） |
+| `default_model` | 默认模型名（必须属于 `models`） |
 | `extra_headers` | 可选 |
 
 行为：
 
 - 全局 **默认档案**  
-- 创建总结或流水线时 **可覆盖** 选用其它档案  
-- Job 元数据记录 `provider_profile_id`、模型名等，**永不写入 Key**  
-- 连通测试按档案执行  
+- 创建总结或流水线时 **可覆盖** 选用其它档案，并在该档案的模型列表中 **切换模型**  
+- Job 元数据记录 `provider_profile_id`、`model`、模板等，**永不写入 Key**  
+- 连通测试按档案执行（验证端点与 Key，不绑定某一个模型）  
+- 旧配置仅有 `default_model`、无 `models` 时，加载时自动补全为单模型列表  
 
 示意（非最终实现格式）：
 
@@ -314,6 +316,7 @@ protocol = "openai"
 base_url = "https://your.example/v1"
 api_key_env = "MY_OPENAI_KEY"
 default_model = "gpt-4o-mini"
+models = ["gpt-4o-mini", "gpt-4o", "o3-mini"]
 
 [[providers]]
 id = "my-anthropic-relay"
@@ -321,6 +324,7 @@ protocol = "anthropic"
 base_url = "https://your.example"
 api_key_env = "MY_ANTHROPIC_KEY"
 default_model = "claude-sonnet-4-5"
+models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 ```
 
 ### 8.2 总结模板（多模板 Markdown）

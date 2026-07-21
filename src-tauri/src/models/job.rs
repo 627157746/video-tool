@@ -55,6 +55,10 @@ pub struct PipelineOptions {
     pub auto_summarize: bool,
     pub provider_profile_id: Option<String>,
     pub template_id: Option<String>,
+    /// Override the selected provider's `default_model` for this job.
+    /// `None` / empty means use the provider default.
+    #[serde(default)]
+    pub model: Option<String>,
     /// Override the global `transcribe_language` for this job. `None` means
     /// follow the global config; `Some("auto")` forces auto-detection.
     #[serde(default)]
@@ -68,6 +72,7 @@ impl Default for PipelineOptions {
             auto_summarize: false,
             provider_profile_id: None,
             template_id: None,
+            model: None,
             transcribe_language: None,
         }
     }
@@ -546,6 +551,7 @@ mod tests {
                 auto_summarize: true,
                 provider_profile_id: None,
                 template_id: None,
+                model: None,
                 transcribe_language: None,
             },
         );
@@ -568,6 +574,7 @@ mod tests {
                 auto_summarize: true,
                 provider_profile_id: None,
                 template_id: None,
+                model: None,
                 transcribe_language: None,
             },
         );
@@ -603,6 +610,7 @@ mod tests {
                 auto_summarize: true,
                 provider_profile_id: None,
                 template_id: None,
+                model: None,
                 transcribe_language: None,
             },
         );
@@ -657,6 +665,7 @@ mod tests {
                 auto_summarize: false,
                 provider_profile_id: None,
                 template_id: None,
+                model: None,
                 transcribe_language: None,
             },
         );

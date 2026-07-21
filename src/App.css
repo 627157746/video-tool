@@ -359,7 +359,6 @@ button:disabled {
 }
 
 .topbar,
-.banner-row,
 .content {
   position: relative;
   z-index: 1;
@@ -560,12 +559,18 @@ button:disabled {
   justify-content: flex-end;
 }
 
-/* ── Banners ── */
+/* ── Banners / fixed toasts ── */
 
-.banner-row {
+.toast-stack {
+  position: fixed;
+  top: 0.9rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200;
   display: grid;
-  gap: 0.5rem;
-  padding: 0.75rem 1.25rem 0;
+  gap: 0.55rem;
+  width: min(36rem, calc(100vw - 1.5rem));
+  pointer-events: none;
 }
 
 .banner {
@@ -577,10 +582,20 @@ button:disabled {
   align-items: flex-start;
   font-size: 0.875rem;
   line-height: 1.45;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+  pointer-events: auto;
+  animation: toast-enter 180ms var(--ease);
+}
+
+.banner.toast {
+  backdrop-filter: blur(16px) saturate(1.3);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
 }
 
 .banner.inline {
   margin: 0.85rem 0;
+  box-shadow: none;
+  animation: none;
 }
 
 .banner.error,
@@ -589,13 +604,13 @@ button:disabled {
 }
 
 .banner.error {
-  background: var(--bad-soft);
+  background: color-mix(in srgb, var(--bad-soft) 92%, var(--panel-strong));
   border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent);
 }
 
 .banner.ok {
   color: var(--ok-fg);
-  background: var(--ok-soft);
+  background: color-mix(in srgb, var(--ok-soft) 92%, var(--panel-strong));
   border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
 }
 
@@ -614,6 +629,17 @@ button:disabled {
 .banner-close:hover {
   opacity: 1;
   background: var(--surface-hover);
+}
+
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-0.45rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ── Content ── */

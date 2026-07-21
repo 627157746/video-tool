@@ -24,6 +24,8 @@ export interface PipelineOptions {
   auto_summarize: boolean;
   provider_profile_id?: string | null;
   template_id?: string | null;
+  /** Override the selected provider's default model for this job. */
+  model?: string | null;
   transcribe_language?: string | null;
 }
 
@@ -98,6 +100,7 @@ export interface ProviderProfilePublic {
   api_key_env?: string | null;
   has_api_key: boolean;
   default_model: string;
+  models: string[];
   extra_headers: Array<[string, string]>;
 }
 
@@ -109,6 +112,7 @@ export interface ProviderProfileInput {
   api_key?: string | null;
   api_key_env?: string | null;
   default_model: string;
+  models: string[];
   extra_headers: Array<[string, string]>;
 }
 
