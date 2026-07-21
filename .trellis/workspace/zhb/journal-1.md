@@ -271,3 +271,36 @@ Jobs can follow defaults or pin Provider/model/template; existing jobs edit via 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: Settings UI section nav and list-detail
+
+**Date**: 2026-07-21
+**Task**: Settings UI section nav and list-detail
+**Branch**: `main`
+
+### Summary
+
+主仓库提交设置页改进：左侧分区导航（外观/流水线/Provider/模板/Sidecar）与 Provider/总结模板列表-详情编辑，替代全部展开卡片；未创建 Trellis 任务。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `bc3325f` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
