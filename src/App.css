@@ -820,8 +820,13 @@ button:disabled {
 .form-grid textarea,
 .profile-editor input,
 .profile-editor select,
-.profile-editor textarea {
+.profile-editor textarea,
+.summarize-config-form input,
+.summarize-config-form select,
+.summarize-config-form textarea {
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--input-bg);
@@ -848,8 +853,10 @@ button:disabled {
 .form-grid textarea:hover,
 .profile-editor input:hover,
 .profile-editor select:hover,
-.profile-editor textarea:hover {
-  border-color: rgba(255, 255, 255, 0.14);
+.profile-editor textarea:hover,
+.summarize-config-form input:hover,
+.summarize-config-form select:hover {
+  border-color: color-mix(in srgb, var(--text) 14%, transparent);
 }
 
 .search:focus,
@@ -858,20 +865,30 @@ button:disabled {
 .form-grid textarea:focus,
 .profile-editor input:focus,
 .profile-editor select:focus,
-.profile-editor textarea:focus {
+.profile-editor textarea:focus,
+.summarize-config-form input:focus,
+.summarize-config-form select:focus {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.15);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-solid) 18%, transparent);
   background: var(--input-bg-focus);
 }
 
 .form-grid select,
-.profile-editor select {
+.profile-editor select,
+.summarize-config-form select {
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%23a1a1aa' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 0.75rem center;
   padding-right: 2rem;
   cursor: pointer;
+}
+
+.form-grid select:disabled,
+.profile-editor select:disabled,
+.summarize-config-form select:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .form-grid textarea,
@@ -1575,12 +1592,39 @@ button:disabled {
 .form-grid label {
   display: grid;
   gap: 0.35rem;
+  min-width: 0;
 }
 
 .form-grid label span {
   color: var(--muted);
   font-size: 0.8125rem;
   font-weight: 500;
+}
+
+/* Job detail: stacked field layout for summarize overrides */
+.summarize-config-card .log-header {
+  margin-bottom: 0.15rem;
+}
+
+.summarize-config-card .log-header h3 {
+  margin: 0 0 0.25rem;
+}
+
+.summarize-config-card .log-header p {
+  margin: 0;
+}
+
+.summarize-config-form {
+  margin-top: 0.75rem;
+}
+
+.summarize-config-form .two-col {
+  align-items: start;
+}
+
+.summarize-config-actions {
+  margin-top: 0.15rem;
+  padding-top: 0.15rem;
 }
 
 .file-picker-field {
@@ -1648,8 +1692,21 @@ button:disabled {
 
 .two-col {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 0.75rem;
+  min-width: 0;
+}
+
+.two-col > label {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.two-col > label > span {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
 }
 
 .settings-wide {

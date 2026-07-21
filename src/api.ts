@@ -8,6 +8,7 @@ import type {
   PipelineOptions,
   SaveConfigRequest,
   SidecarStatus,
+  UpdateJobPipelineRequest,
 } from "./types";
 
 export async function getAppInfo(): Promise<AppInfo> {
@@ -124,6 +125,12 @@ export async function selectJobSegments(
   return invoke<Job>("select_job_segments", {
     request: { job_id: jobId, segment_ids: segmentIds },
   });
+}
+
+export async function updateJobPipeline(
+  request: UpdateJobPipelineRequest,
+): Promise<Job> {
+  return invoke<Job>("update_job_pipeline", { request });
 }
 
 export async function exportJob(

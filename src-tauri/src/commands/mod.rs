@@ -4,7 +4,7 @@ use crate::models::{
     CreateDownloadJobRequest, CreateImportJobRequest, CreateLiveRecordJobRequest, ExportJobRequest,
     Job, JobKind, JobListItem, JobLogRequest, JobSource, PipelineOptions,
     RetryTranscriptSegmentRequest, RunJobRequest, SaveConfigRequest, SelectSegmentsRequest,
-    TestProviderRequest,
+    TestProviderRequest, UpdateJobPipelineRequest,
 };
 use crate::pipeline::{self, RunnerState};
 use crate::sidecar::SidecarStatus;
@@ -369,6 +369,80 @@ pub fn select_job_segments(
 }
 
 #[tauri::command]
+pub fn update_job_pipeline(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: UpdateJobPipelineRequest,
+) -> AppResult<Job> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    if state.runner.is_job_running(&request.job_id) {
+        return Err(AppError::message("任务运行期间不能修改总结配置"));
+    }
+
+    let config = state.config.lock().expect("config lock");
+    let mut job = workspace::load_job(config.workspace_path(), &request.job_id)?;
+
+    let provider_profile_id = normalize_optional_id(request.provider_profile_id);
+    let template_id = normalize_optional_id(request.template_id);
+    let model = normalize_optional_id(request.model);
+
+    if let Some(provider_id) = provider_profile_id.as_deref() {
+        if !config
+            .providers
+            .iter()
+            .any(|provider| provider.id == provider_id)
+        {
+            return Err(AppError::message(format!(
+                "Provider 档案不存在: {provider_id}"
+            )));
+        }
+    }
+    if let Some(template_id_value) = template_id.as_deref() {
+        if !config
+            .templates
+            .iter()
+            .any(|template| template.id == template_id_value)
+        {
+            return Err(AppError::message(format!(
+                "总结模板不存在: {template_id_value}"
+            )));
+        }
+    }
+
+    let provider_changed = job.pipeline.provider_profile_id != provider_profile_id;
+    let template_changed = job.pipeline.template_id != template_id;
+    let model_changed = job.pipeline.model != model;
+    if !provider_changed && !template_changed && !model_changed {
+        return Ok(job);
+    }
+
+    job.pipeline.provider_profile_id = provider_profile_id;
+    job.pipeline.template_id = template_id;
+    job.pipeline.model = model;
+    // Changing summarize inputs only invalidates the summarize step / artifact.
+    job.invalidate_after_step(&crate::models::JobStep::MergeTranscript);
+    let job_dir = workspace::validated_job_dir(config.workspace_path(), &job.id)?;
+    pipeline::paths::remove_downstream_artifacts(
+        &job_dir,
+        &crate::models::JobStep::MergeTranscript,
+    )?;
+    job.refresh_derived_status();
+    job.updated_at = chrono::Utc::now();
+    workspace::save_job(config.workspace_path(), &job)?;
+    use tauri::Emitter;
+    let _ = app.emit("job-updated", &job);
+    Ok(job)
+}
+
+fn normalize_optional_id(value: Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+#[tauri::command]
 pub fn export_job(state: State<'_, AppState>, request: ExportJobRequest) -> AppResult<String> {
     let _operation_guard = state.operation_lock.lock().expect("operation lock");
     if state.runner.is_job_running(&request.job_id) {
@@ -498,19 +572,29 @@ fn merge_pipeline(config: &AppConfig, request: Option<PipelineOptions>) -> Pipel
     let mut pipeline = request.unwrap_or(PipelineOptions {
         auto_transcribe: config.default_auto_transcribe,
         auto_summarize: config.default_auto_summarize,
-        provider_profile_id: config.default_provider_profile_id.clone(),
-        template_id: config.default_template_id.clone(),
+        // Leave provider/template/model as None so summarize resolves the
+        // *current* global defaults at run time (not a stale snapshot).
+        provider_profile_id: None,
+        template_id: None,
         model: None,
         transcribe_language: None,
     });
 
-    if pipeline.provider_profile_id.is_none() {
-        pipeline.provider_profile_id = config.default_provider_profile_id.clone();
-    }
-    if pipeline.template_id.is_none() {
-        pipeline.template_id = config.default_template_id.clone();
-    }
-    // Empty/whitespace model means "use the provider default"; store as None.
+    // Empty/whitespace means "follow current global / provider default".
+    // Do not bake default_provider_profile_id / default_template_id here:
+    // resolve_provider / resolve_template read those when the job field is None.
+    pipeline.provider_profile_id = pipeline
+        .provider_profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    pipeline.template_id = pipeline
+        .template_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
     pipeline.model = pipeline
         .model
         .as_deref()

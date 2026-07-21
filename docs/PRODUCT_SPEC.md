@@ -303,7 +303,11 @@ ingest（download | live-record | import-local）
 
 - 全局 **默认档案**  
 - 创建总结或流水线时 **可覆盖** 选用其它档案，并在该档案的模型列表中 **切换模型**  
-- Job 元数据记录 `provider_profile_id`、`model`、模板等，**永不写入 Key**  
+- 若任务仍跟随全局默认（未显式覆盖），Job 的 `provider_profile_id` / `template_id` / `model` 存 `null`，**总结运行时**再解析当前全局默认；改设置后重跑总结会用新默认  
+- 若创建时显式选了非默认档案/模型，则固化到 Job，后续改全局默认不影响该任务  
+- **已创建任务**可在任务详情「总结配置」中修改 Provider / 模型 / 模板（空=跟随默认）；保存后使总结产物失效，需重跑「AI 总结」  
+- 历史任务若曾写死旧默认 ID，也可在详情中改为「使用全局默认」或指定新档案  
+- 总结产物 `summary/meta.json` 记录实际使用的 `provider_profile_id`、`model` 等，**永不写入 Key**  
 - 连通测试按档案执行（验证端点与 Key，不绑定某一个模型）  
 - 旧配置仅有 `default_model`、无 `models` 时，加载时自动补全为单模型列表  
 

@@ -53,14 +53,21 @@ pub enum SegmentStatus {
 pub struct PipelineOptions {
     pub auto_transcribe: bool,
     pub auto_summarize: bool,
+    /// Job-level Provider override. `None` means use
+    /// `AppConfig.default_provider_profile_id` **at summarize run time**
+    /// (not a snapshot taken at job creation).
     pub provider_profile_id: Option<String>,
+    /// Job-level template override. `None` means use
+    /// `AppConfig.default_template_id` at summarize run time.
     pub template_id: Option<String>,
     /// Override the selected provider's `default_model` for this job.
-    /// `None` / empty means use the provider default.
+    /// `None` / empty means use the provider default at summarize run time.
     #[serde(default)]
     pub model: Option<String>,
     /// Override the global `transcribe_language` for this job. `None` means
     /// follow the global config; `Some("auto")` forces auto-detection.
+    /// Unlike provider/template, language is eagerly resolved at create time
+    /// so the job snapshot records the effective value for transcribe.
     #[serde(default)]
     pub transcribe_language: Option<String>,
 }
@@ -214,6 +221,16 @@ pub struct JobLogRequest {
 pub struct SelectSegmentsRequest {
     pub job_id: String,
     pub segment_ids: Vec<String>,
+}
+
+/// Update summarize-related pipeline overrides on an existing Job.
+/// Empty strings are treated as `None` (follow global / provider defaults at run time).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateJobPipelineRequest {
+    pub job_id: String,
+    pub provider_profile_id: Option<String>,
+    pub template_id: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

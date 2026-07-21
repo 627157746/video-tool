@@ -22,11 +22,29 @@ export type BinarySource = "bundled" | "configured" | "path" | "missing";
 export interface PipelineOptions {
   auto_transcribe: boolean;
   auto_summarize: boolean;
+  /**
+   * Job-level Provider override.
+   * `null` / omitted means use global default at summarize run time.
+   */
   provider_profile_id?: string | null;
+  /**
+   * Job-level template override.
+   * `null` / omitted means use global default at summarize run time.
+   */
   template_id?: string | null;
-  /** Override the selected provider's default model for this job. */
+  /**
+   * Job-level model override for the selected (or default) Provider.
+   * `null` / omitted means use that Provider's default_model at run time.
+   */
   model?: string | null;
   transcribe_language?: string | null;
+}
+
+export interface UpdateJobPipelineRequest {
+  job_id: string;
+  provider_profile_id?: string | null;
+  template_id?: string | null;
+  model?: string | null;
 }
 
 export interface JobListItem {

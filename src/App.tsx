@@ -25,6 +25,7 @@ import {
   selectJobSegments,
   stopRecording,
   testProvider,
+  updateJobPipeline,
 } from "./api";
 import type {
   AppConfigPublic,
@@ -398,10 +399,17 @@ function App() {
   const [autoTranscribe, setAutoTranscribe] = useState(true);
   const [autoSummarize, setAutoSummarize] = useState(false);
   const [autoStart, setAutoStart] = useState(true);
+  /** Empty string means follow global default at summarize run time. */
   const [formProviderId, setFormProviderId] = useState("");
+  /** Empty string means use the selected/default Provider's default_model. */
   const [formModel, setFormModel] = useState("");
+  /** Empty string means follow global default template at summarize run time. */
   const [formTemplateId, setFormTemplateId] = useState("");
   const [formTranscribeLanguage, setFormTranscribeLanguage] = useState("auto");
+  const [jobProviderId, setJobProviderId] = useState("");
+  const [jobModel, setJobModel] = useState("");
+  const [jobTemplateId, setJobTemplateId] = useState("");
+  const [isSavingJobPipeline, setIsSavingJobPipeline] = useState(false);
 
   const [settingsWorkspace, setSettingsWorkspace] = useState("");
   const [settingsSegmentMinutes, setSettingsSegmentMinutes] = useState(30);
@@ -501,12 +509,10 @@ function App() {
     setFormSegmentMinutes(nextConfig.default_segment_minutes);
     setAutoTranscribe(nextConfig.default_auto_transcribe);
     setAutoSummarize(nextConfig.default_auto_summarize);
-    setFormProviderId(nextConfig.default_provider_profile_id ?? "");
-    const defaultProvider = nextConfig.providers.find(
-      (provider) => provider.id === nextConfig.default_provider_profile_id,
-    ) ?? nextConfig.providers[0];
-    setFormModel(defaultProvider?.default_model ?? "");
-    setFormTemplateId(nextConfig.default_template_id ?? "");
+    // Create form starts on "follow global defaults" rather than pinning IDs.
+    setFormProviderId("");
+    setFormModel("");
+    setFormTemplateId("");
     setFormTranscribeLanguage(nextConfig.transcribe_language);
   }, []);
 
@@ -858,9 +864,15 @@ function App() {
     if (!config) {
       return undefined;
     }
+    if (formProviderId.trim()) {
+      return config.providers.find(
+        (provider) => provider.id === formProviderId,
+      );
+    }
     return (
-      config.providers.find((provider) => provider.id === formProviderId) ??
-      config.providers[0]
+      config.providers.find(
+        (provider) => provider.id === config.default_provider_profile_id,
+      ) ?? config.providers[0]
     );
   }, [config, formProviderId]);
 
@@ -868,6 +880,56 @@ function App() {
     () => resolveProviderModelOptions(selectedCreateProvider),
     [selectedCreateProvider],
   );
+
+  const selectedJobProvider = useMemo(() => {
+    if (!config) {
+      return undefined;
+    }
+    if (jobProviderId.trim()) {
+      return config.providers.find((provider) => provider.id === jobProviderId);
+    }
+    return (
+      config.providers.find(
+        (provider) => provider.id === config.default_provider_profile_id,
+      ) ?? config.providers[0]
+    );
+  }, [config, jobProviderId]);
+
+  const jobProviderModelOptions = useMemo(
+    () => resolveProviderModelOptions(selectedJobProvider),
+    [selectedJobProvider],
+  );
+
+  const jobPipelineIsDirty = useMemo(() => {
+    if (!selectedJob) {
+      return false;
+    }
+    const currentProviderId = selectedJob.pipeline.provider_profile_id ?? "";
+    const currentTemplateId = selectedJob.pipeline.template_id ?? "";
+    const currentModel = selectedJob.pipeline.model ?? "";
+    return (
+      jobProviderId !== currentProviderId ||
+      jobTemplateId !== currentTemplateId ||
+      jobModel !== currentModel
+    );
+  }, [jobModel, jobProviderId, jobTemplateId, selectedJob]);
+
+  useEffect(() => {
+    if (!selectedJob) {
+      setJobProviderId("");
+      setJobModel("");
+      setJobTemplateId("");
+      return;
+    }
+    setJobProviderId(selectedJob.pipeline.provider_profile_id ?? "");
+    setJobModel(selectedJob.pipeline.model ?? "");
+    setJobTemplateId(selectedJob.pipeline.template_id ?? "");
+  }, [
+    selectedJob?.id,
+    selectedJob?.pipeline.provider_profile_id,
+    selectedJob?.pipeline.model,
+    selectedJob?.pipeline.template_id,
+  ]);
 
   useEffect(() => {
     if (!createMode) {
@@ -943,21 +1005,21 @@ function App() {
     setAutoTranscribe(config?.default_auto_transcribe ?? true);
     setAutoSummarize(config?.default_auto_summarize ?? false);
     setAutoStart(true);
-    const nextProviderId = config?.default_provider_profile_id ?? "";
-    setFormProviderId(nextProviderId);
-    const defaultProvider =
-      config?.providers.find((provider) => provider.id === nextProviderId) ??
-      config?.providers[0];
-    setFormModel(defaultProvider?.default_model ?? "");
-    setFormTemplateId(config?.default_template_id ?? "");
+    setFormProviderId("");
+    setFormModel("");
+    setFormTemplateId("");
+    setFormTranscribeLanguage(config?.transcribe_language ?? "auto");
   }
 
   function handleCreateProviderChange(nextProviderId: string) {
     setFormProviderId(nextProviderId);
-    const nextProvider = config?.providers.find(
-      (provider) => provider.id === nextProviderId,
-    );
-    setFormModel(nextProvider?.default_model ?? "");
+    // Switching Provider always resets to that Provider's default model.
+    setFormModel("");
+  }
+
+  function handleJobProviderChange(nextProviderId: string) {
+    setJobProviderId(nextProviderId);
+    setJobModel("");
   }
 
   function openCreate(mode: CreateMode) {
@@ -1061,28 +1123,14 @@ function App() {
     setStatusMessage(null);
     setIsBusy(true);
 
-    const resolvedFormModel = (() => {
-      const trimmedModel = formModel.trim();
-      if (
-        createProviderModelOptions.length > 0 &&
-        trimmedModel &&
-        !createProviderModelOptions.includes(trimmedModel)
-      ) {
-        return createProviderModelOptions[0];
-      }
-      return (
-        trimmedModel ||
-        createProviderModelOptions[0] ||
-        selectedCreateProvider?.default_model ||
-        null
-      );
-    })();
+    // Empty selector values mean "follow defaults at summarize run time".
+    // Non-empty values pin an explicit override onto the Job.
     const pipeline = {
       auto_transcribe: autoTranscribe,
       auto_summarize: autoSummarize,
-      provider_profile_id: formProviderId || null,
-      template_id: formTemplateId || null,
-      model: resolvedFormModel,
+      provider_profile_id: formProviderId.trim() || null,
+      template_id: formTemplateId.trim() || null,
+      model: formModel.trim() || null,
       transcribe_language: formTranscribeLanguage,
     };
 
@@ -1134,6 +1182,37 @@ function App() {
       setStatusMessage(`已打开任务目录：${path}`);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleSaveJobPipeline() {
+    if (!selectedJob) {
+      return;
+    }
+    setIsSavingJobPipeline(true);
+    setErrorMessage(null);
+    setStatusMessage(null);
+    try {
+      const updatedJob = await updateJobPipeline({
+        job_id: selectedJob.id,
+        provider_profile_id: jobProviderId.trim() || null,
+        template_id: jobTemplateId.trim() || null,
+        model: jobModel.trim() || null,
+      });
+      selectedJobRef.current = updatedJob;
+      setSelectedJob(updatedJob);
+      setJobs((previousJobs) =>
+        previousJobs.map((entry) =>
+          entry.id === updatedJob.id ? jobToListItem(updatedJob) : entry,
+        ),
+      );
+      setStatusMessage(
+        "总结配置已更新（将使用新 Provider/模型；如已有总结请重跑「AI 总结」）",
+      );
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSavingJobPipeline(false);
     }
   }
 
@@ -1943,6 +2022,113 @@ function App() {
                           {selectedJob.pipeline.auto_summarize ? "开" : "关"}
                         </div>
                       </article>
+
+                      <article className="card soft summarize-config-card">
+                        <div className="log-header">
+                          <div>
+                            <h3>总结配置</h3>
+                            <p className="muted small">
+                              选「使用全局默认 / Provider 默认」则跟随设置；指定后固化到本任务。保存后请重跑「AI 总结」。
+                            </p>
+                          </div>
+                        </div>
+                        <div className="form-grid summarize-config-form">
+                          <div className="two-col">
+                            <label>
+                              <span>Provider</span>
+                              <select
+                                value={jobProviderId}
+                                disabled={
+                                  selectedJob.status === "running" ||
+                                  isSavingJobPipeline
+                                }
+                                onChange={(event) =>
+                                  handleJobProviderChange(event.target.value)
+                                }
+                              >
+                                <option value="">使用全局默认</option>
+                                {config?.providers.map((provider) => (
+                                  <option key={provider.id} value={provider.id}>
+                                    {provider.name}
+                                    {provider.id ===
+                                    config.default_provider_profile_id
+                                      ? "（全局默认）"
+                                      : ""}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              <span>模型</span>
+                              <select
+                                value={jobModel}
+                                disabled={
+                                  selectedJob.status === "running" ||
+                                  isSavingJobPipeline
+                                }
+                                onChange={(event) =>
+                                  setJobModel(event.target.value)
+                                }
+                              >
+                                <option value="">使用 Provider 默认</option>
+                                {jobProviderModelOptions.map((modelName) => (
+                                  <option key={modelName} value={modelName}>
+                                    {modelName}
+                                    {modelName ===
+                                    selectedJobProvider?.default_model
+                                      ? "（档案默认）"
+                                      : ""}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          </div>
+                          <label>
+                            <span>总结模板</span>
+                            <select
+                              value={jobTemplateId}
+                              disabled={
+                                selectedJob.status === "running" ||
+                                isSavingJobPipeline
+                              }
+                              onChange={(event) =>
+                                setJobTemplateId(event.target.value)
+                              }
+                            >
+                              <option value="">使用全局默认</option>
+                              {config?.templates.map((template) => (
+                                <option key={template.id} value={template.id}>
+                                  {template.name}
+                                  {template.id === config.default_template_id
+                                    ? "（全局默认）"
+                                    : ""}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <div className="detail-actions summarize-config-actions">
+                            <button
+                              type="button"
+                              className="btn secondary small"
+                              disabled={
+                                selectedJob.status === "running" ||
+                                isSavingJobPipeline ||
+                                !jobPipelineIsDirty
+                              }
+                              onClick={() => void handleSaveJobPipeline()}
+                            >
+                              {isSavingJobPipeline ? "保存中…" : "保存总结配置"}
+                            </button>
+                            {jobPipelineIsDirty ? (
+                              <span className="muted small">有未保存的修改</span>
+                            ) : (
+                              <span className="muted small">
+                                当前与任务已保存配置一致
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </article>
                     </div>
 
                     {selectedJob.transcript_segments.length > 0 && (
@@ -2742,40 +2928,33 @@ function App() {
                           handleCreateProviderChange(event.target.value)
                         }
                       >
+                        <option value="">使用全局默认</option>
                         {config?.providers.map((provider) => (
                           <option key={provider.id} value={provider.id}>
                             {provider.name}
+                            {provider.id === config.default_provider_profile_id
+                              ? "（全局默认）"
+                              : ""}
                           </option>
                         ))}
                       </select>
                     </label>
                     <label>
                       <span>模型</span>
-                      {createProviderModelOptions.length > 0 ? (
-                        <select
-                          value={
-                            createProviderModelOptions.includes(formModel)
-                              ? formModel
-                              : createProviderModelOptions[0]
-                          }
-                          onChange={(event) => setFormModel(event.target.value)}
-                        >
-                          {createProviderModelOptions.map((modelName) => (
-                            <option key={modelName} value={modelName}>
-                              {modelName}
-                              {modelName === selectedCreateProvider?.default_model
-                                ? "（默认）"
-                                : ""}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          value={formModel}
-                          onChange={(event) => setFormModel(event.target.value)}
-                          placeholder="模型 ID"
-                        />
-                      )}
+                      <select
+                        value={formModel}
+                        onChange={(event) => setFormModel(event.target.value)}
+                      >
+                        <option value="">使用 Provider 默认</option>
+                        {createProviderModelOptions.map((modelName) => (
+                          <option key={modelName} value={modelName}>
+                            {modelName}
+                            {modelName === selectedCreateProvider?.default_model
+                              ? "（档案默认）"
+                              : ""}
+                          </option>
+                        ))}
+                      </select>
                     </label>
                   </div>
                   <label>
@@ -2784,13 +2963,20 @@ function App() {
                       value={formTemplateId}
                       onChange={(event) => setFormTemplateId(event.target.value)}
                     >
+                      <option value="">使用全局默认</option>
                       {config?.templates.map((template) => (
                         <option key={template.id} value={template.id}>
                           {template.name}
+                          {template.id === config.default_template_id
+                            ? "（全局默认）"
+                            : ""}
                         </option>
                       ))}
                     </select>
                   </label>
+                  <p className="muted small">
+                    选「使用全局默认」时，任务不写死 Provider；之后改设置里的默认档案再总结会跟新默认。指定档案/模型后会固化到本任务。
+                  </p>
                 </>
               )}
 

@@ -92,6 +92,7 @@ pub fn run() {
             commands::retry_transcript_segment,
             commands::stop_recording,
             commands::select_job_segments,
+            commands::update_job_pipeline,
             commands::export_job,
             commands::test_provider,
             commands::get_job_transcript,
