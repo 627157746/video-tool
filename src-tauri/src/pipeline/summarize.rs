@@ -58,7 +58,7 @@ pub fn summarize_job(job_dir: &Path, job: &mut Job, config: &AppConfig) -> AppRe
     )?;
 
     let client = build_client(config.proxy_url.as_deref())?;
-    let summary = match provider.protocol.as_str() {
+    let raw_summary = match provider.protocol.as_str() {
         "openai" => call_openai(
             &client,
             provider,
@@ -83,6 +83,9 @@ pub fn summarize_job(job_dir: &Path, job: &mut Job, config: &AppConfig) -> AppRe
             )))
         }
     };
+    // Models often wrap the entire Markdown answer in a ```markdown fence.
+    // Unwrap so the UI renders headings/lists instead of raw source.
+    let summary = unwrap_outer_markdown_fence(&raw_summary);
 
     let summary_dir = paths::summary_dir(job_dir);
     fs::create_dir_all(&summary_dir)?;
@@ -147,6 +150,46 @@ pub fn render_template(
         .replace("{{source_url}}", source_url)
         .replace("{{duration}}", duration)
         .replace("{{transcript}}", transcript)
+}
+
+/// Strip a single outer fenced code block when the model wraps the whole answer.
+///
+/// Common failure mode: response starts with ` ```markdown ` and the UI then
+/// renders the entire summary as a monospaced code block (headings stay as `#`).
+/// Only the outermost document fence is removed; nested code blocks inside the
+/// body are preserved. A missing closing fence is still unwrapped.
+pub fn unwrap_outer_markdown_fence(text: &str) -> String {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("```") {
+        return trimmed.to_string();
+    }
+
+    let mut lines = trimmed.lines();
+    let opening_line = match lines.next() {
+        Some(line) => line.trim(),
+        None => return trimmed.to_string(),
+    };
+    // Opening fence may be bare ``` or ```markdown / ```md / ```Markdown
+    if !opening_line.starts_with("```") {
+        return trimmed.to_string();
+    }
+    let language_tag = opening_line.trim_start_matches('`').trim();
+    if language_tag
+        .chars()
+        .any(|character| !(character.is_ascii_alphanumeric() || character == '-' || character == '_'))
+    {
+        return trimmed.to_string();
+    }
+
+    let mut body_lines: Vec<&str> = lines.collect();
+    if body_lines
+        .last()
+        .is_some_and(|line| line.trim() == "```")
+    {
+        body_lines.pop();
+    }
+
+    body_lines.join("\n").trim().to_string()
 }
 
 fn resolve_provider<'a>(job: &Job, config: &'a AppConfig) -> AppResult<&'a ProviderProfile> {
@@ -379,6 +422,36 @@ mod tests {
             "D",
         );
         assert_eq!(rendered, "A|B|C|D");
+    }
+
+    #[test]
+    fn unwraps_markdown_fence_with_language_and_closing() {
+        let raw = "```markdown\n# Title\n\n- item\n```\n";
+        assert_eq!(
+            unwrap_outer_markdown_fence(raw),
+            "# Title\n\n- item"
+        );
+    }
+
+    #[test]
+    fn unwraps_markdown_fence_without_closing() {
+        let raw = "```md\n## Heading\n\nbody text";
+        assert_eq!(
+            unwrap_outer_markdown_fence(raw),
+            "## Heading\n\nbody text"
+        );
+    }
+
+    #[test]
+    fn leaves_plain_markdown_unchanged() {
+        let raw = "# Title\n\n**bold** and a real `code` span.";
+        assert_eq!(unwrap_outer_markdown_fence(raw), raw);
+    }
+
+    #[test]
+    fn leaves_inner_code_blocks_when_not_whole_document_fence() {
+        let raw = "Intro\n\n```rust\nfn main() {}\n```\n";
+        assert_eq!(unwrap_outer_markdown_fence(raw), raw.trim());
     }
 
     #[test]

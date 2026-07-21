@@ -304,3 +304,36 @@ Jobs can follow defaults or pin Provider/model/template; existing jobs edit via 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Fix Markdown summary unrender
+
+**Date**: 2026-07-21
+**Task**: Fix Markdown summary unrender
+**Branch**: `cursor/4cc7e477`
+
+### Summary
+
+Fixed Markdown summary display when models wrap whole answers in code fences. Stripped outer fences on save and render, updated default templates, and covered with unit tests.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e055d73` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

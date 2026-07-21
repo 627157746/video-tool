@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 9
+- **Total Sessions**: 10
 - **Last Active**: 2026-07-21
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~306 | Active |
+| `journal-1.md` | ~340 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 10 | 2026-07-21 | Fix Markdown summary unrender | `e055d73` | `cursor/4cc7e477` |
 | 9 | 2026-07-21 | Settings UI section nav and list-detail | `bc3325f` | `main` |
 | 8 | 2026-07-21 | Job Provider/model overrides and UI fix | `a27aba2` | `main` |
 | 7 | 2026-07-21 | Provider multi-model and fixed toast | `6c24785` | `main` |

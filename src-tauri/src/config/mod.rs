@@ -129,12 +129,13 @@ fn default_templates() -> Vec<SummaryTemplate> {
         SummaryTemplate {
             id: "default-overview".to_string(),
             name: "内容概览".to_string(),
-            system_prompt: "你是一个严谨的中文内容助理，根据字幕整理结构化总结。".to_string(),
+            system_prompt: "你是一个严谨的中文内容助理，根据字幕整理结构化总结。直接输出 Markdown 正文，不要用代码围栏（```）包裹整篇回答。".to_string(),
             user_template: concat!(
                 "标题：{{title}}\n",
                 "来源：{{source_url}}\n",
                 "时长：{{duration}}\n\n",
-                "请根据以下字幕输出 Markdown 总结，包含：概述、要点列表、时间线（如有）、可执行事项。\n\n",
+                "请根据以下字幕输出 Markdown 总结，包含：概述、要点列表、时间线（如有）、可执行事项。\n",
+                "直接输出 Markdown 正文，不要用 ```markdown 代码块包裹整篇。\n\n",
                 "{{transcript}}\n"
             )
             .to_string(),
@@ -142,10 +143,11 @@ fn default_templates() -> Vec<SummaryTemplate> {
         SummaryTemplate {
             id: "tutorial-keypoints".to_string(),
             name: "教程要点".to_string(),
-            system_prompt: "你擅长把教程口播提炼成可操作步骤。".to_string(),
+            system_prompt: "你擅长把教程口播提炼成可操作步骤。直接输出 Markdown 正文，不要用代码围栏（```）包裹整篇回答。".to_string(),
             user_template: concat!(
                 "视频：{{title}}\n\n",
-                "请提炼：目标读者、前置条件、分步操作、常见坑、一句话结论。\n\n",
+                "请提炼：目标读者、前置条件、分步操作、常见坑、一句话结论。\n",
+                "直接输出 Markdown 正文，不要用 ```markdown 代码块包裹整篇。\n\n",
                 "{{transcript}}\n"
             )
             .to_string(),
@@ -153,10 +155,11 @@ fn default_templates() -> Vec<SummaryTemplate> {
         SummaryTemplate {
             id: "live-talk-notes".to_string(),
             name: "直播口播纪要".to_string(),
-            system_prompt: "你擅长整理直播口播为会议纪要风格笔记。".to_string(),
+            system_prompt: "你擅长整理直播口播为会议纪要风格笔记。直接输出 Markdown 正文，不要用代码围栏（```）包裹整篇回答。".to_string(),
             user_template: concat!(
                 "场次：{{title}}\n来源：{{source_url}}\n\n",
-                "请输出：主题、关键发言、承诺/行动项、待核实信息。\n\n",
+                "请输出：主题、关键发言、承诺/行动项、待核实信息。\n",
+                "直接输出 Markdown 正文，不要用 ```markdown 代码块包裹整篇。\n\n",
                 "{{transcript}}\n"
             )
             .to_string(),

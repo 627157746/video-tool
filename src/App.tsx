@@ -284,6 +284,37 @@ function resolveExistingDefaultId(
   return availableIds.find((availableId) => availableId.trim())?.trim() ?? "";
 }
 
+/**
+ * Models often wrap the entire Markdown answer in a ```markdown fence.
+ * Strip only that outer document fence so ReactMarkdown can render headings
+ * and lists; nested fenced code blocks inside the body are kept.
+ * A missing closing fence is still unwrapped.
+ */
+function unwrapOuterMarkdownFence(markdownText: string): string {
+  const trimmedText = markdownText.trim();
+  if (!trimmedText.startsWith("```")) {
+    return trimmedText;
+  }
+
+  const lines = trimmedText.split(/\r?\n/);
+  const openingLine = lines[0]?.trim() ?? "";
+  if (!openingLine.startsWith("```")) {
+    return trimmedText;
+  }
+
+  const languageTag = openingLine.replace(/^`+/, "").trim();
+  if (languageTag && !/^[A-Za-z0-9_-]+$/.test(languageTag)) {
+    return trimmedText;
+  }
+
+  let bodyLines = lines.slice(1);
+  if (bodyLines.length > 0 && bodyLines[bodyLines.length - 1]?.trim() === "```") {
+    bodyLines = bodyLines.slice(0, -1);
+  }
+
+  return bodyLines.join("\n").trim();
+}
+
 /** Dedupe/trim model names and ensure the default model is present. */
 function normalizeProviderModels(
   models: string[],
@@ -2437,7 +2468,9 @@ function App() {
                               <span className="muted small">可读文档视图</span>
                             </div>
                             <div className="markdown-view">
-                              <ReactMarkdown>{summaryText}</ReactMarkdown>
+                              <ReactMarkdown>
+                                {unwrapOuterMarkdownFence(summaryText)}
+                              </ReactMarkdown>
                             </div>
                           </article>
                         )}
