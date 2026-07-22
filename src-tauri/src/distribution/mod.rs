@@ -13,12 +13,28 @@ use std::path::{Path, PathBuf};
 
 const EXPORT_FORMAT_VERSION: u32 = 1;
 
-/// Optional GitHub releases API (override with env VIDEO_TOOL_RELEASE_API).
-fn release_api_url() -> Option<String> {
+/// Built-in GitHub release source for this project.
+/// Override with `VIDEO_TOOL_RELEASE_API` / `VIDEO_TOOL_RELEASE_PAGE` if needed.
+const DEFAULT_RELEASE_OWNER: &str = "627157746";
+const DEFAULT_RELEASE_REPO: &str = "video-tool";
+
+fn default_release_api_url() -> String {
+    format!(
+        "https://api.github.com/repos/{DEFAULT_RELEASE_OWNER}/{DEFAULT_RELEASE_REPO}/releases/latest"
+    )
+}
+
+fn default_release_page_url() -> String {
+    format!("https://github.com/{DEFAULT_RELEASE_OWNER}/{DEFAULT_RELEASE_REPO}/releases")
+}
+
+/// GitHub releases API URL (override with env VIDEO_TOOL_RELEASE_API).
+fn release_api_url() -> String {
     std::env::var("VIDEO_TOOL_RELEASE_API")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+        .unwrap_or_else(default_release_api_url)
 }
 
 fn release_page_url() -> String {
@@ -26,7 +42,15 @@ fn release_page_url() -> String {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "https://github.com".to_string())
+        .unwrap_or_else(default_release_page_url)
+}
+
+/// Optional token for private repositories (env VIDEO_TOOL_GITHUB_TOKEN only).
+fn release_github_token() -> Option<String> {
+    std::env::var("VIDEO_TOOL_GITHUB_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -516,45 +540,49 @@ pub fn apply_import_package(
 pub fn check_app_update() -> AppResult<UpdateCheckResult> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
     let page = release_page_url();
-    let Some(api_url) = release_api_url() else {
-        return Ok(UpdateCheckResult {
-            current_version: current_version.clone(),
-            latest_version: None,
-            update_available: false,
-            release_page_url: page,
-            release_notes: None,
-            message: format!(
-                "当前版本 {current_version}。未配置 VIDEO_TOOL_RELEASE_API，请手动打开发布页核对更新。"
-            ),
-        });
-    };
+    let api_url = release_api_url();
 
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .user_agent(format!("video-tool/{current_version}"))
         .build()
         .map_err(|error| AppError::message(format!("创建 HTTP 客户端失败: {error}")))?;
-    let response = client
-        .get(&api_url)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .map_err(|error| AppError::message(format!("检查更新失败: {error}")))?;
-    if !response.status().is_success() {
-        return Ok(UpdateCheckResult {
-            current_version: current_version.clone(),
-            latest_version: None,
-            update_available: false,
-            release_page_url: page,
-            release_notes: None,
-            message: format!(
-                "当前版本 {current_version}。远程检查返回 HTTP {}，请稍后重试或手动打开发布页。",
-                response.status()
-            ),
-        });
-    }
-    let body: serde_json::Value = response
-        .json()
-        .map_err(|error| AppError::message(format!("解析更新响应失败: {error}")))?;
+
+    let body = match fetch_release_json(&client, &api_url)? {
+        Ok(body) => body,
+        Err(404) => {
+            // `/releases/latest` can lag on newly publicized repos; fall back to list.
+            match release_list_fallback_url(&api_url) {
+                Some(list_url) => match fetch_release_json(&client, &list_url)? {
+                    Ok(list_body) => match first_stable_release_from_list(&list_body) {
+                        Some(release) => release,
+                        None => {
+                            return Ok(UpdateCheckResult {
+                                latest_version: None,
+                                update_available: false,
+                                release_page_url: page,
+                                release_notes: None,
+                                message: format!(
+                                    "当前版本 {current_version}。尚未找到稳定发布版本。可打开发布页手动核对。"
+                                ),
+                                current_version,
+                            });
+                        }
+                    },
+                    Err(list_status) => {
+                        return Ok(update_check_http_error(&current_version, page, list_status));
+                    }
+                },
+                None => {
+                    return Ok(update_check_http_error(&current_version, page, 404));
+                }
+            }
+        }
+        Err(status_code) => {
+            return Ok(update_check_http_error(&current_version, page, status_code));
+        }
+    };
+
     let latest_raw = body
         .get("tag_name")
         .or_else(|| body.get("name"))
@@ -591,12 +619,16 @@ pub fn check_app_update() -> AppResult<UpdateCheckResult> {
         .is_some_and(|latest| version_is_newer(latest, &current_version));
     let message = if update_available {
         format!(
-            "发现新版本 {}（当前 {}）。请打开发布页下载。",
+            "发现新版本 {}（当前 {}）。请打开发布页下载安装包。",
             latest_version.as_deref().unwrap_or("?"),
             current_version
         )
     } else if latest_version.is_some() {
-        format!("已是最新版本 {current_version}。")
+        format!(
+            "已是最新版本 {}（远端 {}）。",
+            current_version,
+            latest_version.as_deref().unwrap_or("?")
+        )
     } else {
         format!("当前版本 {current_version}；未能解析远程版本号。")
     };
@@ -608,6 +640,87 @@ pub fn check_app_update() -> AppResult<UpdateCheckResult> {
         release_notes: notes,
         message,
     })
+}
+
+fn update_check_http_error(
+    current_version: &str,
+    page: String,
+    status_code: u16,
+) -> UpdateCheckResult {
+    let message = match status_code {
+        404 => format!(
+            "当前版本 {current_version}。尚未找到发布版本，或仓库为私有且未配置 VIDEO_TOOL_GITHUB_TOKEN。可打开发布页手动核对。"
+        ),
+        401 | 403 => format!(
+            "当前版本 {current_version}。远程鉴权失败（HTTP {status_code}）。私有仓库请设置 VIDEO_TOOL_GITHUB_TOKEN 后重试。"
+        ),
+        _ => format!(
+            "当前版本 {current_version}。远程检查返回 HTTP {status_code}，请稍后重试或手动打开发布页。"
+        ),
+    };
+    UpdateCheckResult {
+        current_version: current_version.to_string(),
+        latest_version: None,
+        update_available: false,
+        release_page_url: page,
+        release_notes: None,
+        message,
+    }
+}
+
+/// GET release JSON. Ok(Ok(body)) on success, Ok(Err(status)) on non-success HTTP, Err on transport/parse.
+fn fetch_release_json(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> AppResult<Result<serde_json::Value, u16>> {
+    let mut request = client
+        .get(url)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28");
+    if let Some(token) = release_github_token() {
+        request = request.bearer_auth(token);
+    }
+    let response = request
+        .send()
+        .map_err(|error| AppError::message(format!("检查更新失败: {error}")))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Ok(Err(status.as_u16()));
+    }
+    let body: serde_json::Value = response
+        .json()
+        .map_err(|error| AppError::message(format!("解析更新响应失败: {error}")))?;
+    Ok(Ok(body))
+}
+
+/// When `.../releases/latest` fails, try `.../releases?per_page=10`.
+fn release_list_fallback_url(api_url: &str) -> Option<String> {
+    let trimmed = api_url.trim().trim_end_matches('/');
+    if let Some(base) = trimmed.strip_suffix("/releases/latest") {
+        return Some(format!("{base}/releases?per_page=10"));
+    }
+    if trimmed.ends_with("/releases") {
+        return Some(format!("{trimmed}?per_page=10"));
+    }
+    None
+}
+
+fn first_stable_release_from_list(body: &serde_json::Value) -> Option<serde_json::Value> {
+    let releases = body.as_array()?;
+    releases
+        .iter()
+        .find(|release| {
+            let draft = release
+                .get("draft")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let prerelease = release
+                .get("prerelease")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            !draft && !prerelease
+        })
+        .cloned()
 }
 
 /// Compare dotted numeric versions (e.g. 1.2.3). Non-numeric tails are ignored.
@@ -748,8 +861,44 @@ mod tests {
     fn version_compare_detects_newer() {
         assert!(version_is_newer("0.2.0", "0.1.0"));
         assert!(version_is_newer("v1.0.1", "1.0.0"));
+        assert!(version_is_newer("1.0", "0.9.9"));
         assert!(!version_is_newer("1.0.0", "1.0.0"));
         assert!(!version_is_newer("0.9.9", "1.0.0"));
+        assert!(!version_is_newer("1.0.0-beta", "1.0.0"));
+    }
+
+    #[test]
+    fn default_release_urls_point_at_project_repo() {
+        assert!(release_api_url().contains("627157746/video-tool"));
+        assert!(release_api_url().ends_with("/releases/latest"));
+        assert_eq!(
+            release_page_url(),
+            "https://github.com/627157746/video-tool/releases"
+        );
+    }
+
+    #[test]
+    fn release_list_fallback_url_from_latest() {
+        let fallback = release_list_fallback_url(
+            "https://api.github.com/repos/627157746/video-tool/releases/latest",
+        );
+        assert_eq!(
+            fallback.as_deref(),
+            Some("https://api.github.com/repos/627157746/video-tool/releases?per_page=10")
+        );
+    }
+
+    #[test]
+    fn first_stable_release_skips_draft_and_prerelease() {
+        let body = serde_json::json!([
+            { "tag_name": "v0.3.0-rc1", "draft": false, "prerelease": true },
+            { "tag_name": "v0.2.0", "draft": false, "prerelease": false, "body": "notes" }
+        ]);
+        let release = first_stable_release_from_list(&body).expect("stable release");
+        assert_eq!(
+            release.get("tag_name").and_then(|value| value.as_str()),
+            Some("v0.2.0")
+        );
     }
 
     #[test]
@@ -758,9 +907,11 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let model_path = root.join("ggml-base.bin");
         fs::write(&model_path, b"fake").unwrap();
-        let mut config = AppConfig::default();
-        config.transcribe_model = Some(path_to_string(&model_path));
-        config.transcribe_model_preset = "custom".into();
+        let config = AppConfig {
+            transcribe_model: Some(path_to_string(&model_path)),
+            transcribe_model_preset: "custom".into(),
+            ..AppConfig::default()
+        };
         let inventory = scan_models(&config);
         assert!(inventory.selected_exists);
         assert!(inventory

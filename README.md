@@ -2,7 +2,11 @@
 
 桌面端视频工具（私用）：链接下载 / 直播录制 / 本地转写 / AI 总结。
 
-产品共识见 [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md)。
+- 仓库：<https://github.com/627157746/video-tool>
+- 发布页：<https://github.com/627157746/video-tool/releases>
+- 产品共识：[`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md)
+
+应用内「检查更新」默认查询上述 GitHub Releases；不自动安装。私有镜像可用环境变量 `VIDEO_TOOL_RELEASE_API` / `VIDEO_TOOL_RELEASE_PAGE` 覆盖，私有仓库可设 `VIDEO_TOOL_GITHUB_TOKEN`。
 
 ## 技术栈
 

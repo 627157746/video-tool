@@ -652,7 +652,7 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 - [x] 依赖向导：`get_dependency_report` + 设置「Sidecar」页指引（必需缺失汇总）
 - [x] 模型管理：`list_transcribe_models` / 打开目录；扫描 GGML/GGUF；校验当前选用
 - [x] 配置导出/导入：默认剥离 Key；导入保留本机同 ID Key；任务运行中禁止导入
-- [x] 检查更新：`check_app_update`（可选 `VIDEO_TOOL_RELEASE_API`）+ 打开发布页
+- [x] 检查更新：`check_app_update`（默认 GitHub `627157746/video-tool` Releases；可覆盖 `VIDEO_TOOL_RELEASE_API` / `VIDEO_TOOL_RELEASE_PAGE`，私有仓可用 `VIDEO_TOOL_GITHUB_TOKEN`）+ 打开发布页（不自动安装）
 - [x] 系统诊断：`get_system_diagnostics` 聚合版本 / sidecar / 模型 / 磁盘 / 工作区
 - [x] UI：设置分区 models / backup；diagnostics 完整诊断
 

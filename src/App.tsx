@@ -1978,7 +1978,8 @@ function App() {
 
   async function handleOpenReleasePage() {
     const url =
-      updateCheckResult?.release_page_url?.trim() || "https://github.com";
+      updateCheckResult?.release_page_url?.trim() ||
+      "https://github.com/627157746/video-tool/releases";
     try {
       await openPath(url);
     } catch (error) {
@@ -5099,8 +5100,11 @@ function App() {
               <article className="card settings-wide">
                 <h2>检查应用更新</h2>
                 <p className="muted small">
-                  比较当前版本与发布页；不自动静默安装。可选环境变量
-                  VIDEO_TOOL_RELEASE_API / VIDEO_TOOL_RELEASE_PAGE。
+                  从 GitHub Releases 查询最新版本并比较；
+                  <strong>不会自动下载或静默安装</strong>
+                  。默认仓库 627157746/video-tool；可用
+                  VIDEO_TOOL_RELEASE_API / VIDEO_TOOL_RELEASE_PAGE
+                  覆盖。私有仓库可设 VIDEO_TOOL_GITHUB_TOKEN。
                 </p>
                 <div className="detail-actions">
                   <button
@@ -5109,7 +5113,7 @@ function App() {
                     disabled={isBusy || isLoadingP4Tools}
                     onClick={() => void handleCheckAppUpdate()}
                   >
-                    检查更新
+                    {isLoadingP4Tools ? "检查中…" : "检查更新"}
                   </button>
                   <button
                     type="button"
@@ -5122,13 +5126,27 @@ function App() {
                 </div>
                 {updateCheckResult && (
                   <div className="form-grid" style={{ marginTop: "0.75rem" }}>
-                    <p className="small">{updateCheckResult.message}</p>
+                    <p
+                      className={
+                        updateCheckResult.update_available
+                          ? "small status-succeeded"
+                          : "small"
+                      }
+                    >
+                      {updateCheckResult.message}
+                    </p>
                     <p className="muted small mono">
                       当前 {updateCheckResult.current_version}
                       {updateCheckResult.latest_version
                         ? ` · 远端 ${updateCheckResult.latest_version}`
                         : ""}
+                      {updateCheckResult.update_available ? " · 可更新" : ""}
                     </p>
+                    {updateCheckResult.release_page_url && (
+                      <p className="muted small mono">
+                        {updateCheckResult.release_page_url}
+                      </p>
+                    )}
                     {updateCheckResult.release_notes && (
                       <pre className="artifact-view" style={{ maxHeight: "10rem" }}>
                         {updateCheckResult.release_notes}
