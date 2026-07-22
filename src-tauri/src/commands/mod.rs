@@ -1123,7 +1123,9 @@ pub fn check_yt_dlp_update(state: State<'_, AppState>) -> AppResult<String> {
         .path
         .ok_or_else(|| AppError::message("未找到 yt-dlp，无法检查更新"))?;
 
-    let output = std::process::Command::new(&binary)
+    let mut command = std::process::Command::new(&binary);
+    crate::sidecar::hide_console_window(&mut command);
+    let output = command
         .args(["-U"])
         .output()
         .map_err(|error| AppError::message(format!("执行 yt-dlp -U 失败: {error}")))?;

@@ -329,7 +329,9 @@ pub fn merge_segments(
         writeln!(list_file, "file '{escaped}'")?;
     }
     let output_path = media_dir.join("merged.mkv");
-    let output = Command::new(&ffmpeg_path)
+    let mut command = Command::new(&ffmpeg_path);
+    hide_console_window(&mut command);
+    let output = command
         .current_dir(&media_dir)
         .args([
             "-hide_banner",
@@ -438,13 +440,7 @@ fn require_binary(binary: &ResolvedBinary, label: &str) -> AppResult<String> {
 }
 
 fn hide_console_window(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    let _ = command;
+    crate::sidecar::hide_console_window(command);
 }
 
 #[cfg(test)]

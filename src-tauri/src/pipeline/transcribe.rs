@@ -109,6 +109,7 @@ pub fn transcribe_media_segments(
         let segment_result = (|| -> AppResult<()> {
             extract_audio(ffmpeg_path, &media_path, &wav_path, job_dir)?;
             let mut command = Command::new(transcribe_path);
+            crate::sidecar::hide_console_window(&mut command);
             command.args([
                 "-m",
                 &model_path,
@@ -308,7 +309,9 @@ pub fn merge_transcripts(
 }
 
 fn probe_duration_milliseconds(ffprobe_path: &str, media_path: &Path) -> Option<u64> {
-    let output = Command::new(ffprobe_path)
+    let mut command = Command::new(ffprobe_path);
+    crate::sidecar::hide_console_window(&mut command);
+    let output = command
         .args([
             "-v",
             "error",
@@ -417,7 +420,9 @@ fn extract_audio(
     wav_path: &Path,
     job_dir: &Path,
 ) -> AppResult<()> {
-    let output = Command::new(ffmpeg_path)
+    let mut command = Command::new(ffmpeg_path);
+    crate::sidecar::hide_console_window(&mut command);
+    let output = command
         .args([
             "-hide_banner",
             "-y",

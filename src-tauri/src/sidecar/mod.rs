@@ -177,8 +177,23 @@ fn with_version(
     }
 }
 
+/// Hide the child console window on Windows (GUI app launching CLI tools).
+/// No-op on other platforms. Prefer for all sidecar probes and long-running tools.
+pub fn hide_console_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = command;
+}
+
 fn probe_version(path: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new(path).args(args).output().ok()?;
+    let mut command = Command::new(path);
+    command.args(args);
+    hide_console_window(&mut command);
+    let output = command.output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = if !stdout.trim().is_empty() {

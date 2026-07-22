@@ -527,13 +527,7 @@ fn parse_progress_percent(line: &str) -> Option<f32> {
 }
 
 fn hide_console_window(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    let _ = command;
+    crate::sidecar::hide_console_window(command);
 }
 
 #[allow(dead_code)]
