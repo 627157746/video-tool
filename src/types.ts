@@ -413,6 +413,25 @@ export interface UpdateCheckResult {
   release_page_url: string;
   release_notes?: string | null;
   message: string;
+  installer_url?: string | null;
+  installer_name?: string | null;
+  installer_size_bytes?: number | null;
+  can_install: boolean;
+}
+
+export interface AppUpdateProgress {
+  phase: string;
+  downloaded_bytes: number;
+  total_bytes?: number | null;
+  percent?: number | null;
+  message: string;
+}
+
+export interface AppUpdateInstallResult {
+  installer_path: string;
+  installer_name: string;
+  launched: boolean;
+  message: string;
 }
 
 export interface SystemDiagnostics {

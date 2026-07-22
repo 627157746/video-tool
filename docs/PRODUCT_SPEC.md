@@ -1,8 +1,8 @@
 # video-tool 产品规格（共识文档）
 
-> 状态：**v0.2 已交付**（应用版本 `0.2.0`）；v0.1 为基线，第 14 节为 v0.2 已实现能力说明（原路线图，非未交付清单）  
+> 状态：**v0.2 已交付**（应用版本 `0.2.1`）；v0.1 为基线，第 14 节为 v0.2 已实现能力说明（原路线图，非未交付清单）  
 > 目标用户：仅自己使用，架构按「可演进到小范围分发」预留  
-> 版本：`0.2.0` = v0.1 定稿能力 + 第 14 节 P0–P4 MVP；后置能力仍见各节「非目标」  
+> 版本：`0.2.1` = v0.1 定稿能力 + 第 14 节 P0–P4 MVP + 应用内下载安装更新；后置能力仍见各节「非目标」  
 > 包管理：**pnpm**（不要使用 npm / yarn）  
 > 文档用途：实现与任务拆分时的单一事实来源；改需求先改本文再改代码
 
@@ -652,7 +652,8 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 - [x] 依赖向导：`get_dependency_report` + 设置「Sidecar」页指引（必需缺失汇总）
 - [x] 模型管理：`list_transcribe_models` / 打开目录；扫描 GGML/GGUF；校验当前选用
 - [x] 配置导出/导入：默认剥离 Key；导入保留本机同 ID Key；任务运行中禁止导入
-- [x] 检查更新：`check_app_update`（默认 GitHub `627157746/video-tool` Releases；可覆盖 `VIDEO_TOOL_RELEASE_API` / `VIDEO_TOOL_RELEASE_PAGE`，私有仓可用 `VIDEO_TOOL_GITHUB_TOKEN`）+ 打开发布页（不自动安装）
+- [x] 检查更新：`check_app_update`（默认 GitHub `627157746/video-tool` Releases；可覆盖 `VIDEO_TOOL_RELEASE_API` / `VIDEO_TOOL_RELEASE_PAGE`，私有仓可用 `VIDEO_TOOL_GITHUB_TOKEN`）
+- [x] 应用内更新：`install_app_update`（用户确认后下载安装包并启动 MSI/NSIS 安装向导，非静默；事件 `app-update-progress`）
 - [x] 系统诊断：`get_system_diagnostics` 聚合版本 / sidecar / 模型 / 磁盘 / 工作区
 - [x] UI：设置分区 models / backup；diagnostics 完整诊断
 
@@ -689,7 +690,7 @@ Cookie 下载 ─┘                                     │
 
 - 第 14 节 MVP 能力**已交付**（勾选列表为实现记录）；新增后置能力时：先改本节与第 11 节决策日志，再改代码，并补测试与脱敏审查。  
 - 自动化测试仍不替代 sidecar / 网络 / API Key / Cookie 有效性等环境验收。  
-- **v0.2 发版检查**：`package.json`、`Cargo.toml`、`tauri.conf.json` 版本一致为 `0.2.0`；用户可见「检查更新」比较该版本。
+- **v0.2 发版检查**：`package.json`、`Cargo.toml`、`tauri.conf.json` 版本一致为 `0.2.1`；用户可见「检查更新」比较该版本。
 
 ---
 

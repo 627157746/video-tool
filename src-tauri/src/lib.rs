@@ -116,6 +116,7 @@ pub fn run() {
             commands::export_app_config,
             commands::import_app_config,
             commands::check_app_update,
+            commands::install_app_update,
             commands::get_system_diagnostics,
             commands::check_yt_dlp_update,
             commands::inspect_workspace_health,

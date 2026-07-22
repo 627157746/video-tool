@@ -290,6 +290,12 @@ export async function checkAppUpdate(): Promise<
   return invoke("check_app_update");
 }
 
+export async function installAppUpdate(): Promise<
+  import("./types").AppUpdateInstallResult
+> {
+  return invoke("install_app_update");
+}
+
 export async function getSystemDiagnostics(): Promise<
   import("./types").SystemDiagnostics
 > {

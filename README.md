@@ -6,7 +6,7 @@
 - 发布页：<https://github.com/627157746/video-tool/releases>
 - 产品共识：[`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md)
 
-应用内「检查更新」默认查询上述 GitHub Releases；不自动安装。私有镜像可用环境变量 `VIDEO_TOOL_RELEASE_API` / `VIDEO_TOOL_RELEASE_PAGE` 覆盖，私有仓库可设 `VIDEO_TOOL_GITHUB_TOKEN`。
+应用内「检查更新」默认查询上述 GitHub Releases；发现新版本且有 Windows 安装包时可「下载并安装更新」（确认后下载并启动安装向导，**非静默**）。私有镜像可用环境变量 `VIDEO_TOOL_RELEASE_API` / `VIDEO_TOOL_RELEASE_PAGE` 覆盖，私有仓库可设 `VIDEO_TOOL_GITHUB_TOKEN`。
 
 ## 技术栈
 
@@ -17,7 +17,7 @@
 
 ## 当前版本
 
-应用版本 **`0.2.0`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+应用版本 **`0.2.1`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
 
 ### v0.1 基线
 

@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   checkAppUpdate,
+  installAppUpdate,
   checkYtDlpUpdate,
   createDownloadJobsBatch,
   createImportJob,
@@ -63,6 +64,7 @@ import type {
   SummaryTemplateArtifact,
   SystemDiagnostics,
   TranscribeModelPresets,
+  AppUpdateProgress,
   UpdateCheckResult,
   WorkspaceHealthReport,
 } from "./types";
@@ -254,6 +256,9 @@ function App() {
     useState<SystemDiagnostics | null>(null);
   const [updateCheckResult, setUpdateCheckResult] =
     useState<UpdateCheckResult | null>(null);
+  const [updateProgress, setUpdateProgress] =
+    useState<AppUpdateProgress | null>(null);
+  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
   const [isLoadingP4Tools, setIsLoadingP4Tools] = useState(false);
   const [settingsTranscribeModel, setSettingsTranscribeModel] = useState("");
   const [settingsTranscribeLanguage, setSettingsTranscribeLanguage] = useState("auto");
@@ -672,6 +677,31 @@ function App() {
       mediaQueryList.removeEventListener("change", handleSystemThemeChange);
     };
   }, [themePreferences]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let disposeListener: (() => void) | undefined;
+    void listen<AppUpdateProgress>("app-update-progress", (event) => {
+      if (cancelled) {
+        return;
+      }
+      setUpdateProgress(event.payload);
+    })
+      .then((dispose) => {
+        if (cancelled) {
+          dispose();
+          return;
+        }
+        disposeListener = dispose;
+      })
+      .catch(() => {
+        // Event bridge unavailable outside Tauri shell.
+      });
+    return () => {
+      cancelled = true;
+      disposeListener?.();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1965,6 +1995,7 @@ function App() {
   async function handleCheckAppUpdate() {
     setIsLoadingP4Tools(true);
     setErrorMessage(null);
+    setUpdateProgress(null);
     try {
       const result = await checkAppUpdate();
       setUpdateCheckResult(result);
@@ -1973,6 +2004,46 @@ function App() {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setIsLoadingP4Tools(false);
+    }
+  }
+
+  async function handleInstallAppUpdate() {
+    if (isInstallingUpdate) {
+      return;
+    }
+    const latestVersion =
+      updateCheckResult?.latest_version?.trim() || "新版本";
+    const installerName =
+      updateCheckResult?.installer_name?.trim() || "安装包";
+    const confirmed = window.confirm(
+      `将下载 ${installerName}（目标版本 ${latestVersion}）并启动安装向导。\n\n不会静默安装；请在安装程序中确认。安装完成后可关闭当前应用。\n\n是否继续？`,
+    );
+    if (!confirmed) {
+      return;
+    }
+    setIsInstallingUpdate(true);
+    setErrorMessage(null);
+    setUpdateProgress({
+      phase: "downloading",
+      downloaded_bytes: 0,
+      total_bytes: updateCheckResult?.installer_size_bytes ?? null,
+      percent: 0,
+      message: "准备下载…",
+    });
+    try {
+      const result = await installAppUpdate();
+      setStatusMessage(result.message);
+      setUpdateProgress({
+        phase: "done",
+        downloaded_bytes: updateCheckResult?.installer_size_bytes ?? 0,
+        total_bytes: updateCheckResult?.installer_size_bytes ?? null,
+        percent: 100,
+        message: result.message,
+      });
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsInstallingUpdate(false);
     }
   }
 
@@ -5100,25 +5171,40 @@ function App() {
               <article className="card settings-wide">
                 <h2>检查应用更新</h2>
                 <p className="muted small">
-                  从 GitHub Releases 查询最新版本并比较；
-                  <strong>不会自动下载或静默安装</strong>
-                  。默认仓库 627157746/video-tool；可用
-                  VIDEO_TOOL_RELEASE_API / VIDEO_TOOL_RELEASE_PAGE
-                  覆盖。私有仓库可设 VIDEO_TOOL_GITHUB_TOKEN。
+                  从 GitHub Releases 查询最新版本；有安装包时可
+                  <strong>应用内下载并启动安装向导</strong>
+                  （需确认，非静默安装）。默认仓库 627157746/video-tool。
                 </p>
                 <div className="detail-actions">
                   <button
                     type="button"
                     className="btn"
-                    disabled={isBusy || isLoadingP4Tools}
+                    disabled={
+                      isBusy || isLoadingP4Tools || isInstallingUpdate
+                    }
                     onClick={() => void handleCheckAppUpdate()}
                   >
                     {isLoadingP4Tools ? "检查中…" : "检查更新"}
                   </button>
                   <button
                     type="button"
+                    className="btn"
+                    disabled={
+                      isBusy ||
+                      isInstallingUpdate ||
+                      !updateCheckResult?.update_available ||
+                      !updateCheckResult?.can_install
+                    }
+                    onClick={() => void handleInstallAppUpdate()}
+                  >
+                    {isInstallingUpdate
+                      ? "下载/安装中…"
+                      : "下载并安装更新"}
+                  </button>
+                  <button
+                    type="button"
                     className="btn secondary"
-                    disabled={isBusy}
+                    disabled={isBusy || isInstallingUpdate}
                     onClick={() => void handleOpenReleasePage()}
                   >
                     打开发布页
@@ -5141,10 +5227,36 @@ function App() {
                         ? ` · 远端 ${updateCheckResult.latest_version}`
                         : ""}
                       {updateCheckResult.update_available ? " · 可更新" : ""}
+                      {updateCheckResult.can_install
+                        ? " · 可应用内安装"
+                        : ""}
                     </p>
+                    {updateCheckResult.installer_name && (
+                      <p className="muted small mono">
+                        安装包 {updateCheckResult.installer_name}
+                        {typeof updateCheckResult.installer_size_bytes ===
+                        "number"
+                          ? ` · ${Math.max(
+                              1,
+                              Math.round(
+                                updateCheckResult.installer_size_bytes /
+                                  (1024 * 1024),
+                              ),
+                            )} MB`
+                          : ""}
+                      </p>
+                    )}
                     {updateCheckResult.release_page_url && (
                       <p className="muted small mono">
                         {updateCheckResult.release_page_url}
+                      </p>
+                    )}
+                    {updateProgress && (
+                      <p className="small">
+                        {updateProgress.message}
+                        {typeof updateProgress.percent === "number"
+                          ? `（${updateProgress.percent.toFixed(1)}%）`
+                          : ""}
                       </p>
                     )}
                     {updateCheckResult.release_notes && (

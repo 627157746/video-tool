@@ -1089,6 +1089,16 @@ pub fn check_app_update() -> AppResult<crate::distribution::UpdateCheckResult> {
 }
 
 #[tauri::command]
+pub fn install_app_update(
+    app: tauri::AppHandle,
+) -> AppResult<crate::distribution::AppUpdateInstallResult> {
+    use tauri::Emitter;
+    crate::distribution::install_app_update(&mut |progress| {
+        let _ = app.emit("app-update-progress", &progress);
+    })
+}
+
+#[tauri::command]
 pub fn get_system_diagnostics(
     state: State<'_, AppState>,
 ) -> AppResult<crate::distribution::SystemDiagnostics> {
