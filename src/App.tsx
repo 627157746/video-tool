@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   checkAppUpdate,
   checkYtDlpUpdate,
@@ -3889,7 +3890,18 @@ function App() {
                                   </div>
                                 )}
                                 <div className="markdown-view">
-                                  <ReactMarkdown>
+                                  <ReactMarkdown
+                                    remarkPlugins={[remarkGfm]}
+                                    components={{
+                                      table: ({ children, ...tableProps }) => (
+                                        <div className="markdown-table-scroll">
+                                          <table {...tableProps}>
+                                            {children}
+                                          </table>
+                                        </div>
+                                      ),
+                                    }}
+                                  >
                                     {unwrapOuterMarkdownFence(
                                       activeSummaryContent,
                                     )}

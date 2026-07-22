@@ -924,14 +924,15 @@ button:disabled {
 
 /* ── Forms ── */
 
+/* Text/select/textarea only — never stretch checkboxes/radios into full-width fields. */
 .search,
-.form-grid input,
+.form-grid input:not([type="checkbox"]):not([type="radio"]),
 .form-grid select,
 .form-grid textarea,
-.profile-editor input,
+.profile-editor input:not([type="checkbox"]):not([type="radio"]),
 .profile-editor select,
 .profile-editor textarea,
-.summarize-config-form input,
+.summarize-config-form input:not([type="checkbox"]):not([type="radio"]),
 .summarize-config-form select,
 .summarize-config-form textarea {
   width: 100%;
@@ -958,25 +959,25 @@ button:disabled {
 }
 
 .search:hover,
-.form-grid input:hover,
+.form-grid input:not([type="checkbox"]):not([type="radio"]):hover,
 .form-grid select:hover,
 .form-grid textarea:hover,
-.profile-editor input:hover,
+.profile-editor input:not([type="checkbox"]):not([type="radio"]):hover,
 .profile-editor select:hover,
 .profile-editor textarea:hover,
-.summarize-config-form input:hover,
+.summarize-config-form input:not([type="checkbox"]):not([type="radio"]):hover,
 .summarize-config-form select:hover {
   border-color: color-mix(in srgb, var(--text) 14%, transparent);
 }
 
 .search:focus,
-.form-grid input:focus,
+.form-grid input:not([type="checkbox"]):not([type="radio"]):focus,
 .form-grid select:focus,
 .form-grid textarea:focus,
-.profile-editor input:focus,
+.profile-editor input:not([type="checkbox"]):not([type="radio"]):focus,
 .profile-editor select:focus,
 .profile-editor textarea:focus,
-.summarize-config-form input:focus,
+.summarize-config-form input:not([type="checkbox"]):not([type="radio"]):focus,
 .summarize-config-form select:focus {
   border-color: var(--border-focus);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-solid) 18%, transparent);
@@ -1947,8 +1948,20 @@ button:disabled {
   word-break: break-word;
 }
 
+.markdown-view .markdown-table-scroll {
+  width: 100%;
+  margin: 1em 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.markdown-view .markdown-table-scroll > table {
+  margin: 0;
+}
+
 .markdown-view table {
   width: 100%;
+  min-width: 100%;
   margin: 1em 0;
   border-collapse: collapse;
   font-size: 0.9rem;
@@ -1956,19 +1969,23 @@ button:disabled {
 
 .markdown-view th,
 .markdown-view td {
+  min-width: 4.5rem;
   padding: 0.55rem 0.7rem;
   border: 1px solid var(--border);
   text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .markdown-view th {
-  background: rgba(255, 255, 255, 0.04);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
   color: var(--markdown-heading);
   font-weight: 600;
 }
 
 .markdown-view tr:nth-child(even) td {
-  background: rgba(255, 255, 255, 0.02);
+  background: color-mix(in srgb, var(--text) 3%, transparent);
 }
 
 .clamp {
@@ -2070,19 +2087,33 @@ button:disabled {
   gap: 0.85rem 1.15rem;
 }
 
-.checkbox {
+/* Beat `.form-grid label { display: grid }` so checkbox rows stay horizontal. */
+.checkbox,
+.form-grid label.checkbox,
+.summarize-config-form label.checkbox {
   display: flex;
   align-items: center;
   gap: 0.45rem;
+  min-width: 0;
   color: var(--text-secondary);
   font-size: 0.875rem;
   cursor: pointer;
   user-select: none;
 }
 
-.checkbox input[type="checkbox"] {
+.checkbox input[type="checkbox"],
+.form-grid .checkbox input[type="checkbox"],
+.summarize-config-form .checkbox input[type="checkbox"] {
   width: 1rem;
   height: 1rem;
+  min-width: 1rem;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   accent-color: var(--accent-solid);
   cursor: pointer;
 }
@@ -3156,24 +3187,94 @@ textarea:focus-visible,
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
+  min-width: 0;
+}
+
+.multi-template-picker > span {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
 }
 
 .multi-template-list {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
-  max-height: 10rem;
+  gap: 0.15rem;
+  max-height: 12rem;
   overflow: auto;
-  padding: 0.4rem 0.5rem;
-  border-radius: 0.5rem;
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  padding: 0.35rem 0.45rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--input-bg);
 }
 
-.multi-template-item {
+/*
+ * Multi-select rows live inside `.form-grid`, whose `label { display: grid }`
+ * and full-width `input` rules would otherwise stack checkbox + name and
+ * stretch the checkbox into a text-field look (create modal + job summarize).
+ */
+.multi-template-item,
+.form-grid label.multi-template-item,
+.summarize-config-form label.multi-template-item {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.55rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0.4rem 0.45rem;
+  border-radius: calc(var(--radius) - 0.15rem);
+  color: var(--text);
   font-size: 0.9rem;
+  font-weight: 400;
+  line-height: 1.35;
+  cursor: pointer;
+  user-select: none;
+}
+
+.multi-template-item:hover,
+.form-grid label.multi-template-item:hover,
+.summarize-config-form label.multi-template-item:hover {
+  background: var(--surface-hover);
+}
+
+.multi-template-item:has(input:disabled),
+.form-grid label.multi-template-item:has(input:disabled),
+.summarize-config-form label.multi-template-item:has(input:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.multi-template-item input[type="checkbox"],
+.form-grid .multi-template-item input[type="checkbox"],
+.summarize-config-form .multi-template-item input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  min-width: 1rem;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  accent-color: var(--accent-solid);
+  cursor: pointer;
+}
+
+.multi-template-item input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+}
+
+.multi-template-item span,
+.form-grid .multi-template-item span,
+.summarize-config-form .multi-template-item span {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 400;
+  line-height: 1.35;
+  word-break: break-word;
 }
 
 .summary-template-tabs {
