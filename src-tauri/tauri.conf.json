@@ -35,9 +35,7 @@
     ],
     "windows": {
       "nsis": {
-        "oneClick": true,
         "installMode": "currentUser",
-        "allowToChangeInstallationDirectory": false,
         "displayLanguageSelector": false
       }
     }
