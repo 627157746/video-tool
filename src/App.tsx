@@ -2016,7 +2016,7 @@ function App() {
     const installerName =
       updateCheckResult?.installer_name?.trim() || "安装包";
     const confirmed = window.confirm(
-      `将下载 ${installerName}（目标版本 ${latestVersion}）并启动安装向导。\n\n不会静默安装；请在安装程序中确认。安装完成后可关闭当前应用。\n\n是否继续？`,
+      `将下载 ${installerName}（目标版本 ${latestVersion}）并直接静默安装（无安装向导）。\n\n安装在后台进行；完成后请关闭本应用再重新打开。\n\n是否继续？`,
     );
     if (!confirmed) {
       return;
@@ -5172,8 +5172,9 @@ function App() {
                 <h2>检查应用更新</h2>
                 <p className="muted small">
                   从 GitHub Releases 查询最新版本；有安装包时可
-                  <strong>应用内下载并启动安装向导</strong>
-                  （需确认，非静默安装）。默认仓库 627157746/video-tool。
+                  <strong>应用内下载并静默安装</strong>
+                  （需确认一次，无安装向导界面）。默认仓库
+                  627157746/video-tool。
                 </p>
                 <div className="detail-actions">
                   <button

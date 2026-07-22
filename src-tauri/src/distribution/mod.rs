@@ -634,7 +634,7 @@ pub fn check_app_update() -> AppResult<UpdateCheckResult> {
     let message = if update_available {
         if can_install {
             format!(
-                "发现新版本 {}（当前 {}）。可在应用内下载安装包并启动安装向导。",
+                "发现新版本 {}（当前 {}）。可在应用内下载并静默安装（无向导）。",
                 latest_version.as_deref().unwrap_or("?"),
                 current_version
             )
@@ -809,21 +809,21 @@ pub fn install_app_update(
     }
 
     emit_progress(AppUpdateProgress {
-        phase: "launching".into(),
+        phase: "installing".into(),
         downloaded_bytes,
         total_bytes: total_bytes.or(Some(downloaded_bytes)),
         percent: Some(100.0),
-        message: "正在启动安装向导…".into(),
+        message: "正在静默安装（无向导）…".into(),
     });
 
-    launch_installer(&installer_path)?;
+    launch_installer_silent(&installer_path)?;
 
     emit_progress(AppUpdateProgress {
         phase: "done".into(),
         downloaded_bytes,
         total_bytes: total_bytes.or(Some(downloaded_bytes)),
         percent: Some(100.0),
-        message: "安装向导已启动".into(),
+        message: "静默安装已启动".into(),
     });
 
     Ok(AppUpdateInstallResult {
@@ -831,7 +831,7 @@ pub fn install_app_update(
         installer_name: safe_name,
         launched: true,
         message: format!(
-            "已下载并启动安装向导（目标版本 {}）。请按向导完成安装；安装完成后可关闭当前应用。",
+            "已下载并启动静默安装（目标版本 {}）。安装在后台进行、无向导界面；完成后请关闭本应用并重新打开。",
             check.latest_version.as_deref().unwrap_or("?")
         ),
     })
@@ -1011,30 +1011,42 @@ fn sanitize_installer_file_name(name: &str) -> String {
     }
 }
 
-fn launch_installer(path: &Path) -> AppResult<()> {
+/// Launch installer without interactive wizard UI.
+/// - NSIS setup.exe: `/S` (silent)
+/// - MSI: `msiexec /i … /qn /norestart` (quiet, no reboot prompt)
+fn launch_installer_silent(path: &Path) -> AppResult<()> {
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let extension = path
             .extension()
             .and_then(|value| value.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
         let spawn_result = if extension == "msi" {
+            // Quiet install: no wizard. Files in use may require restart after close.
             std::process::Command::new("msiexec")
-                .arg("/i")
+                .args(["/i"])
                 .arg(path)
+                .args(["/qn", "/norestart"])
+                .creation_flags(CREATE_NO_WINDOW)
                 .spawn()
         } else {
-            std::process::Command::new(path).spawn()
+            // Tauri NSIS installer supports /S for fully silent install.
+            std::process::Command::new(path)
+                .arg("/S")
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
         };
-        spawn_result.map_err(|error| AppError::message(format!("启动安装程序失败: {error}")))?;
+        spawn_result.map_err(|error| AppError::message(format!("启动静默安装失败: {error}")))?;
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
     {
         let _ = path;
         Err(AppError::message(
-            "当前平台尚未支持应用内启动安装程序，请打开发布页手动安装。".to_string(),
+            "当前平台尚未支持应用内静默安装，请打开发布页手动安装。".to_string(),
         ))
     }
 }
