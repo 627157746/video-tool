@@ -53,6 +53,7 @@ import type {
   Job,
   JobGroupDefinition,
   JobListItem,
+  JobStatus,
   JobStep,
   ModelInventory,
   ProviderProfileInput,
@@ -102,7 +103,6 @@ import {
   getStepActionLabel,
   KIND_LABEL,
   PIPELINE_STEPS,
-  STATUS_LABEL,
   STEP_LABEL,
   STEP_STATUS_LABEL,
 } from "./labels";
@@ -160,6 +160,8 @@ function App() {
   const [isFullTextSearching, setIsFullTextSearching] = useState(false);
   /** True after the user has run at least one full-text search (for empty-state UI). */
   const [fullTextHasSearched, setFullTextHasSearched] = useState(false);
+  /** `"all"` | JobStatus for filtering the job list via hero stat cards. */
+  const [statusFilter, setStatusFilter] = useState<"all" | JobStatus>("all");
   /** `"all"` | `"ungrouped"` | exact group name for filtering the job list. */
   const [groupFilter, setGroupFilter] = useState<string>("all");
   /** `"all"` | batch UUID for filtering jobs from one multi-URL create. */
@@ -788,13 +790,15 @@ function App() {
   }, [jobs]);
 
   const filteredJobs = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
+    const titleQuery = searchQuery.trim().toLowerCase();
     return jobs.filter((job) => {
-      const jobGroupLabel = resolveJobGroupLabel(job.group, managedJobGroups);
       const jobGroupFilterKey = resolveJobGroupFilterKey(
         job.group,
         managedJobGroups,
       );
+      if (statusFilter !== "all" && job.status !== statusFilter) {
+        return false;
+      }
       if (groupFilter === "ungrouped") {
         if (jobGroupFilterKey) {
           return false;
@@ -809,30 +813,19 @@ function App() {
           return false;
         }
       }
-      if (!query) {
+      if (!titleQuery) {
         return true;
       }
-      const haystack = [
-        job.id,
-        job.title,
-        job.source_reference,
-        job.batch_id ?? "",
-        jobGroupLabel ?? "",
-        job.status,
-        STATUS_LABEL[job.status],
-        job.kind,
-        KIND_LABEL[job.kind],
-        job.created_at,
-        job.updated_at,
-        formatTime(job.created_at),
-        formatTime(job.updated_at),
-        job.error_message ?? "",
-      ]
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(query);
+      return job.title.toLowerCase().includes(titleQuery);
     });
-  }, [batchFilter, groupFilter, jobs, managedJobGroups, searchQuery]);
+  }, [
+    batchFilter,
+    groupFilter,
+    jobs,
+    managedJobGroups,
+    searchQuery,
+    statusFilter,
+  ]);
 
   const stats = useMemo(() => {
     return {
@@ -2641,27 +2634,64 @@ function App() {
                   下载为<strong>最佳努力</strong>，失败请查看任务日志。
                 </p>
               </div>
-              <div className="stat-grid" aria-label="任务统计">
-                <div className="stat-card">
-                  <span className="stat-label">全部</span>
-                  <strong>{stats.total}</strong>
-                </div>
-                <div className="stat-card running">
-                  <span className="stat-label">运行中</span>
-                  <strong>{stats.running}</strong>
-                </div>
-                <div className="stat-card">
-                  <span className="stat-label">排队中</span>
-                  <strong>{stats.queued}</strong>
-                </div>
-                <div className="stat-card ok">
-                  <span className="stat-label">成功</span>
-                  <strong>{stats.succeeded}</strong>
-                </div>
-                <div className="stat-card bad">
-                  <span className="stat-label">失败</span>
-                  <strong>{stats.failed}</strong>
-                </div>
+              <div
+                className="stat-grid"
+                role="toolbar"
+                aria-label="按状态筛选任务"
+              >
+                {(
+                  [
+                    {
+                      key: "all" as const,
+                      label: "全部",
+                      value: stats.total,
+                      className: "stat-card",
+                    },
+                    {
+                      key: "running" as const,
+                      label: "运行中",
+                      value: stats.running,
+                      className: "stat-card running",
+                    },
+                    {
+                      key: "queued" as const,
+                      label: "排队中",
+                      value: stats.queued,
+                      className: "stat-card",
+                    },
+                    {
+                      key: "succeeded" as const,
+                      label: "成功",
+                      value: stats.succeeded,
+                      className: "stat-card ok",
+                    },
+                    {
+                      key: "failed" as const,
+                      label: "失败",
+                      value: stats.failed,
+                      className: "stat-card bad",
+                    },
+                  ] as const
+                ).map((statItem) => {
+                  const isActive = statusFilter === statItem.key;
+                  return (
+                    <button
+                      key={statItem.key}
+                      type="button"
+                      className={
+                        isActive
+                          ? `${statItem.className} active`
+                          : statItem.className
+                      }
+                      aria-pressed={isActive}
+                      aria-label={`按${statItem.label}筛选任务，当前 ${statItem.value} 个`}
+                      onClick={() => setStatusFilter(statItem.key)}
+                    >
+                      <span className="stat-label">{statItem.label}</span>
+                      <strong>{statItem.value}</strong>
+                    </button>
+                  );
+                })}
               </div>
             </section>
 
@@ -2672,119 +2702,123 @@ function App() {
                     <h2>任务列表</h2>
                     <p className="muted small">点击任务查看步骤、日志与重试</p>
                   </div>
+                  <div className="fulltext-search-bar">
+                    <div className="fulltext-search-combo">
+                      <div className="fulltext-search-field">
+                        <input
+                          className="search fulltext-search-input"
+                          aria-label="跨任务全文检索"
+                          placeholder="搜转写 / 总结…"
+                          value={fullTextQuery}
+                          onChange={(event) => {
+                            setFullTextQuery(event.target.value);
+                            if (event.target.value.trim() === "") {
+                              setFullTextHits([]);
+                              setFullTextHasSearched(false);
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void handleFullTextSearch();
+                            }
+                            if (event.key === "Escape") {
+                              clearFullTextSearch();
+                            }
+                          }}
+                        />
+                        {(fullTextQuery || fullTextHasSearched) && (
+                          <button
+                            type="button"
+                            className="fulltext-clear-icon"
+                            aria-label="清除全文检索"
+                            onClick={() => clearFullTextSearch()}
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        className="btn small fulltext-search-submit"
+                        disabled={isFullTextSearching}
+                        onClick={() => void handleFullTextSearch()}
+                      >
+                        {isFullTextSearching ? "…" : "搜"}
+                      </button>
+                    </div>
+                    {(fullTextHits.length > 0 || fullTextHasSearched) && (
+                      <div
+                        className="fulltext-dropdown"
+                        role="listbox"
+                        aria-label="全文检索结果"
+                      >
+                        <div className="fulltext-dropdown-head">
+                          <span>
+                            {fullTextHits.length > 0
+                              ? `${fullTextHits.length} 条匹配`
+                              : "无匹配结果"}
+                          </span>
+                          <button
+                            type="button"
+                            className="fulltext-reindex-link"
+                            disabled={isBusy}
+                            onClick={() => void handleRebuildSearchIndex()}
+                          >
+                            重建索引
+                          </button>
+                        </div>
+                        {fullTextHits.length > 0 && (
+                          <div className="fulltext-hits" role="list">
+                            {fullTextHits.map((hit) => {
+                              const fieldLabel =
+                                hit.field === "transcript"
+                                  ? "转写"
+                                  : hit.field === "summary"
+                                    ? "总结"
+                                    : hit.field === "summary_template"
+                                      ? "模板"
+                                      : hit.field;
+                              const cleanSnippet = hit.snippet
+                                .replace(/\s+/g, " ")
+                                .trim();
+                              return (
+                                <button
+                                  key={`${hit.job_id}-${hit.path}-${cleanSnippet.slice(0, 20)}`}
+                                  type="button"
+                                  className="fulltext-hit"
+                                  role="option"
+                                  title={hit.title}
+                                  onClick={() => openFullTextHit(hit)}
+                                >
+                                  <div className="fulltext-hit-top">
+                                    <span className="fulltext-hit-title">
+                                      {hit.title}
+                                    </span>
+                                    <span className="fulltext-hit-badge">
+                                      {fieldLabel}
+                                    </span>
+                                  </div>
+                                  <p className="fulltext-snippet">
+                                    {cleanSnippet}
+                                  </p>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="title-filter-bar">
                   <input
                     className="search"
-                    aria-label="搜索任务"
-                    placeholder="筛选标题 / URL / 分组 / batch / 状态 / ID"
+                    aria-label="按标题筛选任务"
+                    placeholder="筛选标题"
                     value={searchQuery}
                     onChange={(event) => setSearchQuery(event.target.value)}
                   />
-                </div>
-                <div className="fulltext-search-bar">
-                  <div className="fulltext-search-combo">
-                    <input
-                      className="search fulltext-search-input"
-                      aria-label="跨任务全文检索"
-                      placeholder="搜转写 / 总结…"
-                      value={fullTextQuery}
-                      onChange={(event) => {
-                        setFullTextQuery(event.target.value);
-                        if (event.target.value.trim() === "") {
-                          setFullTextHits([]);
-                          setFullTextHasSearched(false);
-                        }
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          void handleFullTextSearch();
-                        }
-                        if (event.key === "Escape") {
-                          clearFullTextSearch();
-                        }
-                      }}
-                    />
-                    {(fullTextQuery || fullTextHasSearched) && (
-                      <button
-                        type="button"
-                        className="fulltext-clear-icon"
-                        aria-label="清除全文检索"
-                        onClick={() => clearFullTextSearch()}
-                      >
-                        ×
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="btn small fulltext-search-submit"
-                      disabled={isFullTextSearching}
-                      onClick={() => void handleFullTextSearch()}
-                    >
-                      {isFullTextSearching ? "…" : "搜"}
-                    </button>
-                  </div>
-                  {(fullTextHits.length > 0 || fullTextHasSearched) && (
-                    <div
-                      className="fulltext-dropdown"
-                      role="listbox"
-                      aria-label="全文检索结果"
-                    >
-                      <div className="fulltext-dropdown-head">
-                        <span>
-                          {fullTextHits.length > 0
-                            ? `${fullTextHits.length} 条匹配`
-                            : "无匹配结果"}
-                        </span>
-                        <button
-                          type="button"
-                          className="fulltext-reindex-link"
-                          disabled={isBusy}
-                          onClick={() => void handleRebuildSearchIndex()}
-                        >
-                          重建索引
-                        </button>
-                      </div>
-                      {fullTextHits.length > 0 && (
-                        <div className="fulltext-hits" role="list">
-                          {fullTextHits.map((hit) => {
-                            const fieldLabel =
-                              hit.field === "transcript"
-                                ? "转写"
-                                : hit.field === "summary"
-                                  ? "总结"
-                                  : hit.field === "summary_template"
-                                    ? "模板"
-                                    : hit.field;
-                            const cleanSnippet = hit.snippet
-                              .replace(/\s+/g, " ")
-                              .trim();
-                            return (
-                              <button
-                                key={`${hit.job_id}-${hit.path}-${cleanSnippet.slice(0, 20)}`}
-                                type="button"
-                                className="fulltext-hit"
-                                role="option"
-                                title={hit.title}
-                                onClick={() => openFullTextHit(hit)}
-                              >
-                                <div className="fulltext-hit-top">
-                                  <span className="fulltext-hit-title">
-                                    {hit.title}
-                                  </span>
-                                  <span className="fulltext-hit-badge">
-                                    {fieldLabel}
-                                  </span>
-                                </div>
-                                <p className="fulltext-snippet">
-                                  {cleanSnippet}
-                                </p>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </div>
 
                 {recentBatchOptions.length > 0 && (

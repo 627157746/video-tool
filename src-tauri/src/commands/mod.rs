@@ -1301,11 +1301,13 @@ fn merge_pipeline(config: &AppConfig, request: Option<PipelineOptions>) -> Pipel
 }
 
 fn sanitize_log_name(name: &str) -> AppResult<String> {
+    // Keep in sync with frontend `LOG_NAMES` / `LogName` in src/constants.ts.
     let allowed = [
         "download",
         "record",
         "transcribe",
         "merge_transcript",
+        "chapterize",
         "summarize",
     ];
     if allowed.contains(&name) {
