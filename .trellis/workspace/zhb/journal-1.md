@@ -498,3 +498,36 @@ Completed full v0.2 roadmap MVP: global queue and workspace health; batch URL an
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: Media save mode video/audio and release v0.2.4
+
+**Date**: 2026-07-24
+**Task**: Media save mode video/audio and release v0.2.4
+**Branch**: `main`
+
+### Summary
+
+Implemented exclusive media_save_mode for download/Douyin/live; fixed Douyin ffmpeg .part muxer; bumped app to 0.2.4; committed and archived task 07-24-media-save-options.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3c44c30` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

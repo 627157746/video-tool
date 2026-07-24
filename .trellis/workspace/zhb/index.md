@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 15
-- **Last Active**: 2026-07-21
+- **Total Sessions**: 16
+- **Last Active**: 2026-07-24
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~500 | Active |
+| `journal-1.md` | ~533 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 16 | 2026-07-24 | Media save mode video/audio and release v0.2.4 | `3c44c30` | `main` |
 | 15 | 2026-07-21 | v0.2 P0-P4 MVP implementation | `f97e704` | `main` |
 | 14 | 2026-07-21 | Job groups catalog and filters | `2db1495` | `main` |
 | 13 | 2026-07-21 | Managed job groups | - | `main` |
