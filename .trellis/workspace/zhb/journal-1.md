@@ -518,7 +518,7 @@ Implemented exclusive media_save_mode for download/Douyin/live; fixed Douyin ffm
 
 | Hash | Message |
 |------|---------|
-| `3c44c30` | (see git log) |
+| `6789522` | feat: exclusive media save mode and release v0.2.4 |
 
 ### Testing
 
