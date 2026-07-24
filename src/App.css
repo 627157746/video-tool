@@ -2107,6 +2107,29 @@ button.stat-card.active {
   gap: 0.85rem 1.15rem;
 }
 
+.radio-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.radio-fieldset legend {
+  padding: 0;
+  margin-bottom: 0.4rem;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.checkbox input[type="radio"],
+.form-grid .checkbox input[type="radio"] {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+}
+
 /* Beat `.form-grid label { display: grid }` so checkbox rows stay horizontal. */
 .checkbox,
 .form-grid label.checkbox,

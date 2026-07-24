@@ -24,7 +24,11 @@ cross-layer verification.
 ## Closed Values
 
 Represent Rust enums as TypeScript string unions and use exhaustive mappings for
-labels and visual states. When adding a variant, search:
+labels and visual states.
+
+`MediaSaveMode` is `"video" | "audio"` (snake_case serialization). It is exclusive
+(not two booleans). Create requests may omit it (default `video`); `Job.source`
+should expose it for detail UI. When adding a variant, search:
 
 - Rust pattern matches and state derivation.
 - Serde tests/defaults.

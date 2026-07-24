@@ -114,7 +114,7 @@ fn is_text_metadata(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Job, JobKind, JobSource, PipelineOptions};
+    use crate::models::{Job, JobKind, JobSource, MediaSaveMode, PipelineOptions};
     use std::io::Read;
 
     #[test]
@@ -132,6 +132,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions::default(),
         );
@@ -187,6 +188,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions::default(),
         );

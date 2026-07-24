@@ -1,5 +1,6 @@
 use super::{logs, paths};
 use crate::error::{AppError, AppResult};
+use crate::models::MediaSaveMode;
 use crate::sidecar::{ResolvedBinary, SidecarStatus};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -22,6 +23,7 @@ pub struct LiveRecordOptions<'a> {
     pub segment_minutes: u32,
     pub minimum_free_disk_gb: u32,
     pub reconnect_attempts: u32,
+    pub media_save_mode: MediaSaveMode,
     pub sidecars: &'a SidecarStatus,
     pub stop_requested: Arc<AtomicBool>,
 }
@@ -60,6 +62,7 @@ pub fn record_live_segments(
         segment_minutes,
         minimum_free_disk_gb,
         reconnect_attempts,
+        media_save_mode,
         sidecars,
         stop_requested,
     } = options;
@@ -70,14 +73,22 @@ pub fn record_live_segments(
         .ok_or_else(|| AppError::message("直播分段时长过大"))?;
     paths::ensure_job_layout(job_dir)?;
     let _ = logs::clear_log(job_dir, "record");
+    let segment_extension = match media_save_mode {
+        MediaSaveMode::Video => "ts",
+        MediaSaveMode::Audio => "m4a",
+    };
     let _ = logs::append_log(
         job_dir,
         "record",
         &format!(
-            "=== live record ===\nsource: {source_url}\nsegment_minutes: {}\nreconnect_attempts: {}\nminimum_free_disk_gb: {}\nffmpeg: {}\n",
+            "=== live record ===\nsource: {source_url}\nsegment_minutes: {}\nreconnect_attempts: {}\nminimum_free_disk_gb: {}\nmedia_save_mode: {}\nsegment_extension: {segment_extension}\nffmpeg: {}\n",
             segment_minutes.max(1),
             reconnect_attempts,
             minimum_free_disk_gb,
+            match media_save_mode {
+                MediaSaveMode::Video => "video",
+                MediaSaveMode::Audio => "audio",
+            },
             ffmpeg_path
         ),
     );
@@ -134,31 +145,41 @@ pub fn record_live_segments(
         );
 
         let output_pattern = paths::media_dir(job_dir)
-            .join("segment_%03d.ts")
+            .join(format!("segment_%03d.{segment_extension}"))
             .to_string_lossy()
             .replace('\\', "/");
+        let segment_time = segment_seconds.to_string();
+        let start_number_text = start_number.to_string();
         let mut command = Command::new(&ffmpeg_path);
+        command.args([
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-rw_timeout",
+            "15000000",
+            "-i",
+            &input_url,
+        ]);
+        match media_save_mode {
+            MediaSaveMode::Video => {
+                command.args(["-map", "0", "-c", "copy"]);
+            }
+            MediaSaveMode::Audio => {
+                // Direct audio-only capture: map first audio stream and encode AAC.
+                // Do not record full video segments then convert.
+                command.args(["-map", "0:a:0", "-vn", "-c:a", "aac", "-b:a", "192k"]);
+            }
+        }
         command
             .args([
-                "-hide_banner",
-                "-nostdin",
-                "-y",
-                "-rw_timeout",
-                "15000000",
-                "-i",
-                &input_url,
-                "-map",
-                "0",
-                "-c",
-                "copy",
                 "-f",
                 "segment",
                 "-segment_time",
-                &segment_seconds.to_string(),
+                &segment_time,
                 "-reset_timestamps",
                 "1",
                 "-segment_start_number",
-                &start_number.to_string(),
+                &start_number_text,
                 &output_pattern,
             ])
             .stdout(Stdio::null())
@@ -328,7 +349,18 @@ pub fn merge_segments(
         let escaped = file_name.replace('\'', "'\\''");
         writeln!(list_file, "file '{escaped}'")?;
     }
-    let output_path = media_dir.join("merged.mkv");
+    let is_audio_only = segment_files.iter().all(|file_name| {
+        Path::new(file_name)
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("m4a"))
+    });
+    let merged_file_name = if is_audio_only {
+        "merged.m4a"
+    } else {
+        "merged.mkv"
+    };
+    let output_path = media_dir.join(merged_file_name);
     let mut command = Command::new(&ffmpeg_path);
     hide_console_window(&mut command);
     let output = command
@@ -344,7 +376,7 @@ pub fn merge_segments(
             "concat_list.txt",
             "-c",
             "copy",
-            "merged.mkv",
+            merged_file_name,
         ])
         .output()?;
     let _ = fs::remove_file(list_path);

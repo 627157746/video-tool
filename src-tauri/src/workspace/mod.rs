@@ -368,7 +368,7 @@ pub fn repair_workspace_health(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{JobKind, JobSource, PipelineOptions};
+    use crate::models::{JobKind, JobSource, MediaSaveMode, PipelineOptions};
 
     fn temporary_workspace(test_name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -398,6 +398,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions::default(),
         );
@@ -426,6 +427,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions::default(),
         );
@@ -462,6 +464,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions::default(),
         );

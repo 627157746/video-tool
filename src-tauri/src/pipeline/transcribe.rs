@@ -456,7 +456,7 @@ fn extract_audio(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{JobKind, JobSource, PipelineOptions};
+    use crate::models::{JobKind, JobSource, MediaSaveMode, PipelineOptions};
 
     #[test]
     fn merges_selected_transcripts_in_order() {
@@ -482,6 +482,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions::default(),
         );
@@ -530,6 +531,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions::default(),
         );

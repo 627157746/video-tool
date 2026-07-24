@@ -218,7 +218,7 @@ fn build_fts_query(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Job, JobKind, JobSource, PipelineOptions};
+    use crate::models::{Job, JobKind, JobSource, MediaSaveMode, PipelineOptions};
     use uuid::Uuid;
 
     #[test]
@@ -235,6 +235,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions::default(),
         );

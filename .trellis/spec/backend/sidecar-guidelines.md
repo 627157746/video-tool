@@ -39,6 +39,21 @@ Check exit status explicitly. A non-empty first output line is not proof that a
 version probe or command succeeded. Include redacted stderr context in failures
 without returning unbounded tool output.
 
+### ffmpeg and partial filenames
+
+ffmpeg chooses the output muxer from the file extension when `-f` is omitted.
+Temporary names such as `original.m4a.part` end with `.part`, so ffmpeg reports
+“Unable to choose an output format” even when the intended container is m4a.
+
+When writing to a `.part` (or other non-standard) path, either:
+
+1. Force the muxer explicitly (e.g. `-f ipod` for AAC-in-MP4 / m4a), then rename
+   to the final extension, or
+2. Use a temporary name that still ends with a real container extension
+   (e.g. `original.part.m4a`).
+
+Prefer (1) when the project already uses `*.part` as the incomplete-file marker.
+
 ## Timeout, Cancellation, and Cleanup
 
 Every new subprocess integration must make these decisions explicit:

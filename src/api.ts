@@ -5,6 +5,7 @@ import type {
   Job,
   JobListItem,
   JobStep,
+  MediaSaveMode,
   PipelineOptions,
   SaveConfigRequest,
   SidecarStatus,
@@ -51,6 +52,7 @@ export async function createDownloadJob(input: {
   batch_id?: string | null;
   pipeline?: PipelineOptions;
   auto_start?: boolean;
+  media_save_mode?: MediaSaveMode;
 }): Promise<Job> {
   return invoke<Job>("create_download_job", { request: input });
 }
@@ -70,6 +72,7 @@ export async function createDownloadJobsBatch(input: {
   download_cookies_mode?: string | null;
   download_cookies_file?: string | null;
   download_cookies_from_browser?: string | null;
+  media_save_mode?: MediaSaveMode;
 }): Promise<CreateDownloadJobsBatchResult> {
   return invoke<CreateDownloadJobsBatchResult>("create_download_jobs_batch", {
     request: input,
@@ -83,6 +86,7 @@ export async function createLiveRecordJob(input: {
   segment_minutes?: number;
   pipeline?: PipelineOptions;
   auto_start?: boolean;
+  media_save_mode?: MediaSaveMode;
 }): Promise<Job> {
   return invoke<Job>("create_live_record_job", { request: input });
 }

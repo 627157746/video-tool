@@ -1,7 +1,7 @@
 use super::{douyin, logs};
 use crate::config::{validate_cookies_browser, AppConfig};
 use crate::error::{AppError, AppResult};
-use crate::models::JobSource;
+use crate::models::{JobSource, MediaSaveMode};
 use crate::sidecar::ResolvedBinary;
 use reqwest::blocking::Client;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, REFERER, USER_AGENT};
@@ -140,17 +140,68 @@ impl DownloadCookiesOptions {
     }
 }
 
+/// yt-dlp format / extract flags for exclusive video | audio save mode.
+pub fn yt_dlp_format_args(mode: MediaSaveMode) -> Vec<String> {
+    match mode {
+        MediaSaveMode::Video => Vec::new(),
+        MediaSaveMode::Audio => vec![
+            "-f".to_string(),
+            "ba/b".to_string(),
+            "-x".to_string(),
+            "--audio-format".to_string(),
+            "m4a".to_string(),
+            "--audio-quality".to_string(),
+            "0".to_string(),
+        ],
+    }
+}
+
+/// ffmpeg args: Douyin video play URL in → audio-only file out (no full video artifact).
+///
+/// Output may use a non-standard extension such as `.m4a.part`, so the muxer is
+/// forced with `-f ipod` (AAC-in-MP4 / m4a). Without this, ffmpeg fails with
+/// "Unable to choose an output format".
+pub fn douyin_audio_ffmpeg_args(play_url: &str, output_path: &str) -> Vec<String> {
+    vec![
+        "-hide_banner".to_string(),
+        "-nostdin".to_string(),
+        "-y".to_string(),
+        "-user_agent".to_string(),
+        douyin::DOUYIN_MOBILE_USER_AGENT.to_string(),
+        "-headers".to_string(),
+        "Referer: https://www.douyin.com/\r\n".to_string(),
+        "-i".to_string(),
+        play_url.to_string(),
+        "-vn".to_string(),
+        "-c:a".to_string(),
+        "aac".to_string(),
+        "-b:a".to_string(),
+        "192k".to_string(),
+        "-f".to_string(),
+        "ipod".to_string(),
+        output_path.to_string(),
+    ]
+}
+
 /// Best-effort download entry: Douyin share text/links use the share-page
 /// resolver; everything else falls back to yt-dlp.
 pub fn run_download(
     job_dir: &Path,
     raw_input: &str,
     yt_dlp: &ResolvedBinary,
+    ffmpeg_path: Option<&str>,
+    media_save_mode: MediaSaveMode,
     cookies: &DownloadCookiesOptions,
     on_progress: Option<DownloadProgressCallback>,
 ) -> AppResult<DownloadResult> {
     if douyin::looks_like_douyin_input(raw_input) {
-        match run_douyin_download(job_dir, raw_input, on_progress.clone()) {
+        match run_douyin_download(
+            job_dir,
+            raw_input,
+            ffmpeg_path,
+            media_save_mode,
+            on_progress.clone(),
+        ) {
             Ok(result) => return Ok(result),
             Err(error) => {
                 logs::append_log(
@@ -161,17 +212,33 @@ pub fn run_download(
                 // Continue to yt-dlp with the extracted short/full URL when possible.
                 let fallback_url = douyin::extract_douyin_url(raw_input)
                     .unwrap_or_else(|| raw_input.trim().to_string());
-                return run_yt_dlp_download(job_dir, &fallback_url, yt_dlp, cookies, on_progress);
+                return run_yt_dlp_download(
+                    job_dir,
+                    &fallback_url,
+                    yt_dlp,
+                    media_save_mode,
+                    cookies,
+                    on_progress,
+                );
             }
         }
     }
 
-    run_yt_dlp_download(job_dir, raw_input.trim(), yt_dlp, cookies, on_progress)
+    run_yt_dlp_download(
+        job_dir,
+        raw_input.trim(),
+        yt_dlp,
+        media_save_mode,
+        cookies,
+        on_progress,
+    )
 }
 
 pub fn run_douyin_download(
     job_dir: &Path,
     raw_input: &str,
+    ffmpeg_path: Option<&str>,
+    media_save_mode: MediaSaveMode,
     on_progress: Option<DownloadProgressCallback>,
 ) -> AppResult<DownloadResult> {
     let media_dir = job_dir.join("media");
@@ -181,7 +248,10 @@ pub fn run_douyin_download(
     logs::append_log(
         job_dir,
         "download",
-        &format!("=== douyin share-page download ===\ninput: {raw_input}\n"),
+        &format!(
+            "=== douyin share-page download ===\ninput: {raw_input}\nmedia_save_mode: {}\n",
+            media_save_mode_label(media_save_mode)
+        ),
     )?;
 
     let resolved = douyin::resolve_douyin_media(raw_input)?;
@@ -196,6 +266,10 @@ pub fn run_douyin_download(
             resolved.title.as_deref().unwrap_or("(none)")
         ),
     )?;
+
+    if media_save_mode == MediaSaveMode::Audio {
+        return run_douyin_audio_via_ffmpeg(job_dir, &resolved, ffmpeg_path, on_progress);
+    }
 
     report_progress(&on_progress, 5.0);
 
@@ -348,10 +422,129 @@ pub fn run_douyin_download(
     })
 }
 
+fn run_douyin_audio_via_ffmpeg(
+    job_dir: &Path,
+    resolved: &douyin::ResolvedDouyinMedia,
+    ffmpeg_path: Option<&str>,
+    on_progress: Option<DownloadProgressCallback>,
+) -> AppResult<DownloadResult> {
+    let binary_path = ffmpeg_path.ok_or_else(|| {
+        AppError::message(
+            "抖音「保存音频」需要 ffmpeg：请安装并加入 PATH，或在设置中配置 ffmpeg 路径。",
+        )
+    })?;
+
+    let media_dir = job_dir.join("media");
+    let destination = media_dir.join("original.m4a");
+    let partial_path = media_dir.join("original.m4a.part");
+    if partial_path.exists() {
+        let _ = fs::remove_file(&partial_path);
+    }
+    if destination.exists() {
+        let _ = fs::remove_file(&destination);
+    }
+
+    let partial_display = partial_path.to_string_lossy().replace('\\', "/");
+    let ffmpeg_args = douyin_audio_ffmpeg_args(&resolved.play_url, &partial_display);
+    logs::append_log(
+        job_dir,
+        "download",
+        &format!(
+            "=== douyin audio via ffmpeg ===\nffmpeg: {binary_path}\nargs: {}\n",
+            ffmpeg_args.join(" ")
+        ),
+    )?;
+
+    report_progress(&on_progress, 10.0);
+
+    let mut command = Command::new(binary_path);
+    command
+        .args(&ffmpeg_args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    hide_console_window(&mut command);
+
+    let mut child = command.spawn().map_err(|error| {
+        AppError::message(format!(
+            "无法启动 ffmpeg（{binary_path}）: {error}。请确认工具可执行。"
+        ))
+    })?;
+
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::message("ffmpeg stderr 不可用"))?;
+    let job_dir_for_stderr = job_dir.to_path_buf();
+    let stderr_handle = std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            let _ = logs::append_log(&job_dir_for_stderr, "download", &line);
+        }
+    });
+
+    let status = child
+        .wait()
+        .map_err(|error| AppError::message(format!("等待 ffmpeg 退出失败: {error}")))?;
+    let _ = stderr_handle.join();
+
+    if !status.success() {
+        let _ = fs::remove_file(&partial_path);
+        let code = status
+            .code()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        return Err(AppError::message(format!(
+            "抖音音频提取失败（ffmpeg exit {code}）。请查看 logs/download.log。工具: {binary_path}"
+        )));
+    }
+
+    let partial_size = fs::metadata(&partial_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if partial_size == 0 {
+        let _ = fs::remove_file(&partial_path);
+        return Err(AppError::message(
+            "抖音音频提取结果为空（0 字节）。可能是无音轨、链接失效或地区限制。",
+        ));
+    }
+
+    fs::rename(&partial_path, &destination).map_err(|error| {
+        AppError::message(format!(
+            "无法将临时音频文件重命名为 {}: {error}",
+            destination.display()
+        ))
+    })?;
+
+    let media_files = list_media_files(&media_dir)?;
+    if media_files.is_empty() {
+        return Err(AppError::message(
+            "抖音音频提取完成但 media/ 中未找到文件。请查看 logs/download.log。",
+        ));
+    }
+
+    report_progress(&on_progress, 100.0);
+    logs::append_log(
+        job_dir,
+        "download",
+        &format!(
+            "douyin audio succeeded: {} ({partial_size} bytes)\n",
+            media_files.join(", ")
+        ),
+    )?;
+
+    Ok(DownloadResult {
+        media_files,
+        tool_path: format!("douyin-ffmpeg:{binary_path}"),
+        tool_version: Some(format!("video_id={}", resolved.video_id)),
+        resolved_title: resolved.title.clone(),
+    })
+}
+
 pub fn run_yt_dlp_download(
     job_dir: &Path,
     url: &str,
     yt_dlp: &ResolvedBinary,
+    media_save_mode: MediaSaveMode,
     cookies: &DownloadCookiesOptions,
     on_progress: Option<DownloadProgressCallback>,
 ) -> AppResult<DownloadResult> {
@@ -371,12 +564,19 @@ pub fn run_yt_dlp_download(
         logs::clear_log(job_dir, "download")?;
     }
 
+    let format_args = yt_dlp_format_args(media_save_mode);
     logs::append_log(
         job_dir,
         "download",
         &format!(
-            "=== yt-dlp download ===\nurl: {url}\nbinary: {binary_path}\nversion: {}\n{}\n",
+            "=== yt-dlp download ===\nurl: {url}\nbinary: {binary_path}\nversion: {}\nmedia_save_mode: {}\nformat_args: {}\n{}\n",
             yt_dlp.version.as_deref().unwrap_or("unknown"),
+            media_save_mode_label(media_save_mode),
+            if format_args.is_empty() {
+                "(default)".to_string()
+            } else {
+                format_args.join(" ")
+            },
             cookies.describe_for_log()
         ),
     )?;
@@ -395,6 +595,7 @@ pub fn run_yt_dlp_download(
             "-o",
             &output_template,
         ])
+        .args(&format_args)
         .args(cookies.yt_dlp_args())
         .arg(url)
         .stdout(Stdio::piped())
@@ -496,6 +697,13 @@ fn report_progress(on_progress: &Option<DownloadProgressCallback>, percent: f32)
     }
 }
 
+fn media_save_mode_label(mode: MediaSaveMode) -> &'static str {
+    match mode {
+        MediaSaveMode::Video => "video",
+        MediaSaveMode::Audio => "audio",
+    }
+}
+
 fn list_media_files(media_dir: &Path) -> AppResult<Vec<String>> {
     let mut files = Vec::new();
     if !media_dir.exists() {
@@ -581,7 +789,7 @@ pub fn copy_local_media(job_dir: &Path, local_path: &str) -> AppResult<Vec<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{JobKind, JobSource};
+    use crate::models::{JobKind, JobSource, MediaSaveMode};
 
     fn sample_source() -> JobSource {
         JobSource {
@@ -593,6 +801,7 @@ mod tests {
             download_cookies_mode: None,
             download_cookies_file: None,
             download_cookies_from_browser: None,
+            media_save_mode: MediaSaveMode::default(),
         }
     }
 
@@ -635,5 +844,38 @@ mod tests {
             options.yt_dlp_args(),
             vec!["--cookies-from-browser".to_string(), "firefox".to_string()]
         );
+    }
+
+    #[test]
+    fn yt_dlp_audio_mode_uses_direct_audio_extract_flags() {
+        let args = yt_dlp_format_args(MediaSaveMode::Audio);
+        assert!(args.iter().any(|value| value == "-x"));
+        assert!(args.iter().any(|value| value == "ba/b"));
+        assert!(args.iter().any(|value| value == "m4a"));
+        assert!(!yt_dlp_format_args(MediaSaveMode::Video)
+            .iter()
+            .any(|value| value == "-x"));
+    }
+
+    #[test]
+    fn douyin_audio_ffmpeg_args_map_play_url_to_audio_only() {
+        let args = douyin_audio_ffmpeg_args(
+            "https://example.com/play/video.mp4",
+            "media/original.m4a.part",
+        );
+        assert!(args.iter().any(|value| value == "-vn"));
+        assert!(args.iter().any(|value| value == "-i"));
+        let input_index = args.iter().position(|value| value == "-i").expect("-i");
+        assert_eq!(args[input_index + 1], "https://example.com/play/video.mp4");
+        // .part is not a real muxer extension; force ipod/m4a container.
+        let format_index = args.iter().position(|value| value == "-f").expect("-f");
+        assert_eq!(args[format_index + 1], "ipod");
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("media/original.m4a.part")
+        );
+        assert!(!args
+            .iter()
+            .any(|value| value.ends_with(".mp4") && *value != args[input_index + 1]));
     }
 }

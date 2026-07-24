@@ -127,6 +127,9 @@ export interface StepProgress {
   detail?: string | null;
 }
 
+/** Exclusive final media product for download / live ingest. */
+export type MediaSaveMode = "video" | "audio";
+
 export interface Job {
   id: string;
   status: JobStatus;
@@ -140,6 +143,8 @@ export interface Job {
     download_cookies_mode?: string | null;
     download_cookies_file?: string | null;
     download_cookies_from_browser?: string | null;
+    /** Exclusive video | audio. Omitted on older jobs → video. */
+    media_save_mode?: MediaSaveMode;
   };
   pipeline: PipelineOptions;
   /** Custom grouping label; null / omitted means ungrouped. */

@@ -143,6 +143,17 @@ impl PipelineOptions {
     }
 }
 
+/// Exclusive final media product: video container **or** standalone audio (not both).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaSaveMode {
+    /// Keep a video container in `media/` (default; may still contain an audio track).
+    #[default]
+    Video,
+    /// Keep only a standalone audio file; never leave a full video as the final artifact.
+    Audio,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobSource {
     pub kind: JobKind,
@@ -161,6 +172,9 @@ pub struct JobSource {
     /// Browser id for yt-dlp `--cookies-from-browser` when mode is `browser`.
     #[serde(default)]
     pub download_cookies_from_browser: Option<String>,
+    /// Exclusive save mode for download / live ingest. Omitted on older jobs → video.
+    #[serde(default)]
+    pub media_save_mode: MediaSaveMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -292,6 +306,9 @@ pub struct CreateDownloadJobRequest {
     pub download_cookies_file: Option<String>,
     #[serde(default)]
     pub download_cookies_from_browser: Option<String>,
+    /// Exclusive `video` | `audio`. Omitted → video.
+    #[serde(default)]
+    pub media_save_mode: MediaSaveMode,
 }
 
 /// Multi-line download create: one Job per non-empty entry / URL-like line.
@@ -311,6 +328,9 @@ pub struct CreateDownloadJobsBatchRequest {
     pub download_cookies_file: Option<String>,
     #[serde(default)]
     pub download_cookies_from_browser: Option<String>,
+    /// Exclusive `video` | `audio`. Omitted → video. Shared by all jobs in the batch.
+    #[serde(default)]
+    pub media_save_mode: MediaSaveMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -332,6 +352,9 @@ pub struct CreateLiveRecordJobRequest {
     pub pipeline: Option<PipelineOptions>,
     #[serde(default)]
     pub auto_start: bool,
+    /// Exclusive `video` | `audio`. Omitted → video.
+    #[serde(default)]
+    pub media_save_mode: MediaSaveMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -875,6 +898,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions {
                 auto_transcribe: true,
@@ -904,6 +928,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions::default(),
         );
@@ -911,6 +936,33 @@ mod tests {
         value.as_object_mut().expect("job object").remove("group");
         let restored: Job = serde_json::from_value(value).expect("deserialize without group");
         assert_eq!(restored.group, None);
+    }
+
+    #[test]
+    fn deserializes_legacy_job_without_media_save_mode_as_video() {
+        let job = Job::new(
+            JobSource {
+                kind: JobKind::Download,
+                url: Some("https://example.com".into()),
+                title: Some("legacy".into()),
+                local_path: None,
+                segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::Audio,
+            },
+            PipelineOptions::default(),
+        );
+        let mut value = serde_json::to_value(&job).expect("serialize job");
+        value
+            .get_mut("source")
+            .and_then(|source| source.as_object_mut())
+            .expect("source object")
+            .remove("media_save_mode");
+        let restored: Job =
+            serde_json::from_value(value).expect("deserialize without media_save_mode");
+        assert_eq!(restored.source.media_save_mode, MediaSaveMode::Video);
     }
 
     #[test]
@@ -925,6 +977,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions::default(),
         );
@@ -967,6 +1020,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions::default(),
         );
@@ -987,6 +1041,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions {
                 auto_transcribe: true,
@@ -1028,6 +1083,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions {
                 auto_transcribe: true,
@@ -1088,6 +1144,7 @@ mod tests {
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             PipelineOptions {
                 auto_transcribe: true,

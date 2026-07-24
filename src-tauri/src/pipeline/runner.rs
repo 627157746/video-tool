@@ -675,8 +675,15 @@ fn run_ingest(
                 }
             }));
             let cookies = download::DownloadCookiesOptions::resolve(&job.source, config)?;
-            let result =
-                download::run_download(job_dir, &url, &sidecars.yt_dlp, &cookies, Some(callback))?;
+            let result = download::run_download(
+                job_dir,
+                &url,
+                &sidecars.yt_dlp,
+                sidecars.ffmpeg.path.as_deref(),
+                job.source.media_save_mode,
+                &cookies,
+                Some(callback),
+            )?;
             job.media_files = result.media_files;
             job.tool_path = Some(result.tool_path);
             job.tool_version = result.tool_version;
@@ -729,6 +736,7 @@ fn run_ingest(
                         .unwrap_or(config.default_segment_minutes),
                     minimum_free_disk_gb: config.min_free_disk_gb,
                     reconnect_attempts: config.live_reconnect_attempts,
+                    media_save_mode: job.source.media_save_mode,
                     sidecars: &sidecars,
                     stop_requested: stop_flag,
                 },

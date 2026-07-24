@@ -56,6 +56,7 @@ import type {
   JobListItem,
   JobStatus,
   JobStep,
+  MediaSaveMode,
   ModelInventory,
   ProviderProfileInput,
   SearchHit,
@@ -243,6 +244,9 @@ function App() {
   const [formCookiesMode, setFormCookiesMode] = useState("inherit");
   const [formCookiesFile, setFormCookiesFile] = useState("");
   const [formCookiesBrowser, setFormCookiesBrowser] = useState("chrome");
+  /** Exclusive save mode for download / live create forms. */
+  const [formMediaSaveMode, setFormMediaSaveMode] =
+    useState<MediaSaveMode>("video");
   const [workspaceHealth, setWorkspaceHealth] =
     useState<WorkspaceHealthReport | null>(null);
   const [isInspectingHealth, setIsInspectingHealth] = useState(false);
@@ -1152,6 +1156,7 @@ function App() {
     setFormCookiesMode("inherit");
     setFormCookiesFile("");
     setFormCookiesBrowser("chrome");
+    setFormMediaSaveMode("video");
     setFormLocalPath("");
     setFormSegmentMinutes(config?.default_segment_minutes ?? 30);
     setAutoTranscribe(config?.default_auto_transcribe ?? true);
@@ -1321,6 +1326,7 @@ function App() {
             formCookiesMode === "browser"
               ? formCookiesBrowser.trim() || null
               : null,
+          media_save_mode: formMediaSaveMode,
         });
         if (batchResult.jobs.length === 0) {
           throw new Error("未能创建任何下载任务");
@@ -1354,6 +1360,7 @@ function App() {
           segment_minutes: formSegmentMinutes,
           pipeline,
           auto_start: autoStart,
+          media_save_mode: formMediaSaveMode,
         });
         focusJobId = created.id;
         closeCreate();
@@ -3487,6 +3494,18 @@ function App() {
                                     {selectedJob.source.url || "—"}
                                   </dd>
                                 </div>
+                                {(selectedJob.source.kind === "download" ||
+                                  selectedJob.source.kind === "live_record") && (
+                                  <div>
+                                    <dt>保存形态</dt>
+                                    <dd>
+                                      {(selectedJob.source.media_save_mode ??
+                                        "video") === "audio"
+                                        ? "音频"
+                                        : "视频"}
+                                    </dd>
+                                  </div>
+                                )}
                                 <div>
                                   <dt>本地路径</dt>
                                   <dd className="mono">
@@ -6130,6 +6149,37 @@ function App() {
                     }
                   />
                 </label>
+              )}
+
+              {(createMode === "download" || createMode === "live") && (
+                <fieldset className="radio-fieldset">
+                  <legend>保存形态</legend>
+                  <div className="checkbox-row">
+                    <label className="checkbox">
+                      <input
+                        type="radio"
+                        name="media-save-mode"
+                        value="video"
+                        checked={formMediaSaveMode === "video"}
+                        onChange={() => setFormMediaSaveMode("video")}
+                      />
+                      保存视频
+                    </label>
+                    <label className="checkbox">
+                      <input
+                        type="radio"
+                        name="media-save-mode"
+                        value="audio"
+                        checked={formMediaSaveMode === "audio"}
+                        onChange={() => setFormMediaSaveMode("audio")}
+                      />
+                      保存音频
+                    </label>
+                  </div>
+                  <p className="muted small">
+                    二选一。保存音频时会尽量直接拉取/输出音频，不会先完整下载视频再转换。
+                  </p>
+                </fieldset>
               )}
 
               <div className="checkbox-row">

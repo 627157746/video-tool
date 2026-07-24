@@ -17,9 +17,33 @@ TypeScript mirrors, event consumers, and UI rendering to be reviewed together.
 
 ## Serialized Enums
 
-`JobKind`, `JobStatus`, `StepStatus`, `JobStep`, and `SegmentStatus` serialize
-as snake_case. Keep TypeScript unions and exhaustive label/style maps in sync.
-Do not use display labels as persisted values.
+`JobKind`, `JobStatus`, `StepStatus`, `JobStep`, `SegmentStatus`, and
+`MediaSaveMode` serialize as snake_case. Keep TypeScript unions and exhaustive
+label/style maps in sync. Do not use display labels as persisted values.
+
+### MediaSaveMode (ingest product)
+
+`JobSource.media_save_mode` is an **exclusive** final-product choice:
+
+- `video` (default) — keep a video container under `media/` (may still contain
+  an audio track inside the container).
+- `audio` — keep only a standalone audio file; never leave a full video as the
+  final `media/` artifact.
+
+Do **not** model this as two combinable booleans. Omitted field on older
+`source.json` must deserialize as `video` (`#[serde(default)]` +
+`Default::default()`).
+
+Audio-mode ingest must not “download full video to `media/`, then convert”:
+
+| Path | Audio-mode approach |
+|------|---------------------|
+| yt-dlp | Direct audio format (`-f ba/b`, `-x`, `--audio-format m4a`) |
+| Douyin | Same video `play_url` into ffmpeg with `-vn` (and explicit muxer when needed) |
+| Live | ffmpeg maps audio only (`0:a:0`), audio segment extension |
+
+Transcribe’s temporary 16 kHz WAV extract is an internal pipeline step, not the
+user-facing “save audio” product.
 
 Some existing variants such as `Cancelled` and `Skipped` have limited or no
 production paths. Do not invent behavior from the enum name; trace actual
@@ -127,6 +151,11 @@ Use `RecordTermination`-style descriptive outcomes for normal end, user stop,
 reconnect exhaustion, disk protection, and tool failure. Preserve completed
 segments on interruption. User stop with captured media and operational failure
 are not automatically the same state.
+
+When `media_save_mode` is `audio`, record audio-only segments (e.g.
+`segment_%03d.m4a`) by mapping the first audio stream; do not capture full video
+segments then post-convert. Merge output should match the segment family (e.g.
+`merged.m4a` for audio-only segments).
 
 Only live recording currently has a stop flag. Do not present download,
 transcribe, merge, or summarize as cancellable until process and state cleanup

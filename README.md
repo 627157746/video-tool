@@ -17,7 +17,13 @@
 
 ## 当前版本
 
-应用版本 **`0.2.3`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+应用版本 **`0.2.4`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+
+### v0.2.4
+
+- 新建下载 / 直播任务支持「保存视频 | 保存音频」二选一（`media_save_mode`）
+- 仅音频：yt-dlp 直接音频 format；抖音以 play URL + ffmpeg `-vn`（含 `.part` 强制 muxer）；直播仅 map 音频轨
+- 旧 Job 缺字段默认保存视频；任务详情可回看保存形态
 
 ### v0.1 基线
 

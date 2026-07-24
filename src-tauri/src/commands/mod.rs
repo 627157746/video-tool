@@ -3,9 +3,9 @@ use crate::error::{AppError, AppResult};
 use crate::models::{
     CreateDownloadJobRequest, CreateDownloadJobsBatchRequest, CreateDownloadJobsBatchResponse,
     CreateImportJobRequest, CreateLiveRecordJobRequest, ExportJobRequest, Job, JobKind,
-    JobListItem, JobLogRequest, JobSource, PipelineOptions, RetryTranscriptSegmentRequest,
-    RunJobRequest, SaveConfigRequest, SelectSegmentsRequest, TestProviderRequest,
-    UpdateJobGroupRequest, UpdateJobPipelineRequest, UpdateJobTitleRequest,
+    JobListItem, JobLogRequest, JobSource, MediaSaveMode, PipelineOptions,
+    RetryTranscriptSegmentRequest, RunJobRequest, SaveConfigRequest, SelectSegmentsRequest,
+    TestProviderRequest, UpdateJobGroupRequest, UpdateJobPipelineRequest, UpdateJobTitleRequest,
 };
 use crate::pipeline::{self, RunnerState};
 use crate::sidecar::SidecarStatus;
@@ -203,6 +203,7 @@ pub fn create_download_job(
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: request.media_save_mode,
             },
             pipeline,
         );
@@ -294,6 +295,7 @@ pub fn create_download_jobs_batch(
                     download_cookies_mode: None,
                     download_cookies_file: None,
                     download_cookies_from_browser: None,
+                    media_save_mode: request.media_save_mode,
                 },
                 pipeline.clone(),
             );
@@ -372,6 +374,7 @@ pub fn create_live_record_job(
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: request.media_save_mode,
             },
             pipeline,
         );
@@ -424,6 +427,7 @@ pub fn create_import_job(
                 download_cookies_mode: None,
                 download_cookies_file: None,
                 download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
             },
             pipeline,
         );
