@@ -17,7 +17,13 @@
 
 ## 当前版本
 
-应用版本 **`0.2.4`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+应用版本 **`0.2.5`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+
+### v0.2.5
+
+- 抖音直播：原生解析房间页 `stream_url`（FLV/HLS），不再依赖已失效的 streamlink 字段
+- 直播解析失败时不再把房间 HTML 页交给 ffmpeg（避免 `Invalid data found when processing input`）
+- 录制时为抖音拉流附带 User-Agent / Referer
 
 ### v0.2.4
 

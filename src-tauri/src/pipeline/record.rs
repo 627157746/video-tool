@@ -1,4 +1,4 @@
-use super::{logs, paths};
+use super::{douyin, logs, paths};
 use crate::error::{AppError, AppResult};
 use crate::models::MediaSaveMode;
 use crate::sidecar::{ResolvedBinary, SidecarStatus};
@@ -9,6 +9,14 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+#[derive(Debug, Clone)]
+struct ResolvedLiveSource {
+    url: String,
+    user_agent: Option<String>,
+    referer: Option<String>,
+    resolver: &'static str,
+}
 
 #[derive(Debug, Clone)]
 pub struct RecordResult {
@@ -112,22 +120,35 @@ pub fn record_live_segments(
             }
         }
 
-        let input_url =
-            match resolve_stream_url(source_url, &sidecars.streamlink, job_dir, &stop_requested) {
-                Ok(resolved_url) => resolved_url,
-                Err(_) if stop_requested.load(Ordering::SeqCst) => {
-                    termination = Some(RecordTermination::StoppedByUser);
-                    break;
+        let resolved_source = match resolve_live_source(
+            source_url,
+            &sidecars.streamlink,
+            job_dir,
+            &stop_requested,
+        ) {
+            Ok(resolved) => resolved,
+            Err(_) if stop_requested.load(Ordering::SeqCst) => {
+                termination = Some(RecordTermination::StoppedByUser);
+                break;
+            }
+            Err(error) => {
+                last_error = error.to_string();
+                let _ = logs::append_log(
+                    job_dir,
+                    "record",
+                    &format!("resolve live source failed: {last_error}"),
+                );
+                if attempt < reconnect_attempts {
+                    let _ = logs::append_log(job_dir, "record", "等待 3 秒后重试解析流地址");
+                    std::thread::sleep(Duration::from_secs(3));
+                    continue;
                 }
-                Err(error) => {
-                    let _ = logs::append_log(
-                        job_dir,
-                        "record",
-                        &format!("streamlink resolve failed, use original URL: {error}"),
-                    );
-                    source_url.to_string()
-                }
-            };
+                termination = Some(RecordTermination::ReconnectExhausted {
+                    detail: last_error.clone(),
+                });
+                break;
+            }
+        };
         if stop_requested.load(Ordering::SeqCst) {
             termination = Some(RecordTermination::StoppedByUser);
             break;
@@ -137,10 +158,11 @@ pub fn record_live_segments(
             job_dir,
             "record",
             &format!(
-                "record attempt {}/{}; start segment {}",
+                "record attempt {}/{}; start segment {}; resolver={}",
                 attempt + 1,
                 reconnect_attempts + 1,
-                start_number
+                start_number,
+                resolved_source.resolver
             ),
         );
 
@@ -151,15 +173,18 @@ pub fn record_live_segments(
         let segment_time = segment_seconds.to_string();
         let start_number_text = start_number.to_string();
         let mut command = Command::new(&ffmpeg_path);
-        command.args([
-            "-hide_banner",
-            "-nostdin",
-            "-y",
-            "-rw_timeout",
-            "15000000",
-            "-i",
-            &input_url,
-        ]);
+        command.args(["-hide_banner", "-nostdin", "-y", "-rw_timeout", "15000000"]);
+        if let Some(user_agent) = resolved_source.user_agent.as_deref() {
+            command.args(["-user_agent", user_agent]);
+        }
+        let referer_header = resolved_source
+            .referer
+            .as_ref()
+            .map(|referer| format!("Referer: {referer}\r\n"));
+        if let Some(header_value) = referer_header.as_deref() {
+            command.args(["-headers", header_value]);
+        }
+        command.args(["-i", &resolved_source.url]);
         match media_save_mode {
             MediaSaveMode::Video => {
                 command.args(["-map", "0", "-c", "copy"]);
@@ -392,14 +417,97 @@ pub fn merge_segments(
         .map(|name| name.to_string_lossy().to_string()))
 }
 
-fn resolve_stream_url(
+fn resolve_live_source(
+    source_url: &str,
+    streamlink: &ResolvedBinary,
+    job_dir: &Path,
+    stop_requested: &AtomicBool,
+) -> AppResult<ResolvedLiveSource> {
+    if looks_like_direct_stream_url(source_url) {
+        let _ = logs::append_log(
+            job_dir,
+            "record",
+            "source looks like a direct stream URL; skip page resolvers",
+        );
+        return Ok(ResolvedLiveSource {
+            url: source_url.to_string(),
+            user_agent: None,
+            referer: None,
+            resolver: "direct",
+        });
+    }
+
+    if douyin::looks_like_douyin_live_url(source_url) {
+        match douyin::resolve_douyin_live_stream(source_url) {
+            Ok(resolved) => {
+                let title = resolved.title.as_deref().unwrap_or("(无标题)");
+                let _ = logs::append_log(
+                    job_dir,
+                    "record",
+                    &format!(
+                        "douyin live resolved: room_id={} quality={} protocol={} title={}",
+                        resolved.room_id, resolved.quality, resolved.protocol, title
+                    ),
+                );
+                return Ok(ResolvedLiveSource {
+                    url: resolved.stream_url,
+                    user_agent: Some(douyin::DOUYIN_LIVE_DESKTOP_USER_AGENT.to_string()),
+                    referer: Some(douyin::DOUYIN_LIVE_REFERER.to_string()),
+                    resolver: "douyin-live",
+                });
+            }
+            Err(error) if stop_requested.load(Ordering::SeqCst) => {
+                return Err(error);
+            }
+            Err(error) => {
+                let _ = logs::append_log(
+                    job_dir,
+                    "record",
+                    &format!("douyin live resolve failed, try streamlink: {error}"),
+                );
+            }
+        }
+    }
+
+    match resolve_with_streamlink(source_url, streamlink, job_dir, stop_requested) {
+        Ok(url) => Ok(ResolvedLiveSource {
+            url,
+            user_agent: None,
+            referer: None,
+            resolver: "streamlink",
+        }),
+        Err(error) if stop_requested.load(Ordering::SeqCst) => Err(error),
+        Err(error) => {
+            // Never feed a live room HTML page to ffmpeg: it always fails with
+            // "Invalid data found when processing input".
+            Err(AppError::message(format!(
+                "无法解析直播流地址（streamlink: {error}）。请粘贴直链（m3u8/flv），或确认该平台解析可用。"
+            )))
+        }
+    }
+}
+
+fn looks_like_direct_stream_url(source_url: &str) -> bool {
+    let lower = source_url.to_ascii_lowercase();
+    lower.contains(".m3u8")
+        || lower.contains(".flv")
+        || lower.contains(".ts?")
+        || lower.ends_with(".ts")
+        || lower.starts_with("rtmp://")
+        || lower.starts_with("rtmps://")
+        || lower.starts_with("srt://")
+}
+
+fn resolve_with_streamlink(
     source_url: &str,
     streamlink: &ResolvedBinary,
     job_dir: &Path,
     stop_requested: &AtomicBool,
 ) -> AppResult<String> {
     let Some(binary_path) = streamlink.path.as_deref() else {
-        return Ok(source_url.to_string());
+        return Err(AppError::message(
+            "未配置 streamlink，且输入不是直链；无法从直播间页面解析流地址",
+        ));
     };
     let mut command = Command::new(binary_path);
     command
@@ -440,7 +548,22 @@ fn resolve_stream_url(
         child_stderr.read_to_end(&mut stderr)?;
     }
     if !status.success() {
-        return Err(AppError::message(String::from_utf8_lossy(&stderr).trim()));
+        let stderr_text = String::from_utf8_lossy(&stderr).trim().to_string();
+        let stdout_text = String::from_utf8_lossy(&stdout).trim().to_string();
+        let detail = if !stderr_text.is_empty() {
+            stderr_text
+        } else if !stdout_text.is_empty() {
+            stdout_text
+        } else {
+            format!(
+                "streamlink 退出码 {}",
+                status
+                    .code()
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            )
+        };
+        return Err(AppError::message(detail));
     }
     let resolved = String::from_utf8_lossy(&stdout).trim().to_string();
     if resolved.is_empty() {
