@@ -564,3 +564,36 @@ Added tauri-plugin-notification, notify_on_job_finish config toggle (Serde defau
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: v0.3 容量治理/转写校对/媒体预览实现
+
+**Date**: 2026-07-26
+**Task**: v0.3 容量治理/转写校对/媒体预览实现
+**Branch**: `main`
+
+### Summary
+
+Implemented all remaining v0.3 subtasks: workspace capacity governance (get_workspace_usage, purge_job_media, media_purged_at guards, CapacityPanel settings section), transcript proofreading (transcript_edit.rs SRT cue editing with prev backups, invalidation, overwrite confirms, TranscriptProofreadPanel), media preview (asset protocol scoped to workspace, preview.rs remux to preview.mp4 excluded from pipeline index, MediaPreviewPanel with subtitle sync). PRODUCT_SPEC §5.2 + decisions 22-24 updated. Validation: cargo fmt/clippy -D warnings/test (94 passed), pnpm typecheck/build.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `uncommitted` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
