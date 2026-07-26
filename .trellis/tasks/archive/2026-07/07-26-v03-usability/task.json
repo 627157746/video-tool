@@ -1,0 +1,31 @@
+{
+  "id": "v03-usability",
+  "name": "v03-usability",
+  "title": "v0.3 使用体验增强（校对/预览/通知/容量）",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "zhb",
+  "assignee": "zhb",
+  "createdAt": "2026-07-26",
+  "completedAt": "2026-07-26",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "07-26-transcript-edit",
+    "07-26-media-preview",
+    "07-26-job-notifications",
+    "07-26-workspace-capacity"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
