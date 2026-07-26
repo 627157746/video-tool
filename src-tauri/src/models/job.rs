@@ -244,6 +244,14 @@ pub struct Job {
     /// Hash of glossary used for the last transcribe/merge (reproducibility).
     #[serde(default)]
     pub glossary_hash: Option<String>,
+    /// Set when `media/` contents were manually purged (text assets kept).
+    /// Cleared after a successful ingest re-run. Omitted on older jobs.
+    #[serde(default)]
+    pub media_purged_at: Option<DateTime<Utc>>,
+    /// Set when the merged transcript was manually proofread/edited.
+    /// Cleared when merge/segment-retry regenerates merged artifacts.
+    #[serde(default)]
+    pub transcript_edited_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub stop_requested: bool,
     #[serde(default)]
@@ -468,6 +476,9 @@ pub struct SaveConfigRequest {
     pub glossary: Option<crate::config::GlossaryConfig>,
     #[serde(default)]
     pub default_auto_chapterize: Option<bool>,
+    /// System notification on job terminal state (missing = keep current).
+    #[serde(default)]
+    pub notify_on_job_finish: Option<bool>,
     pub sidecar_paths: Option<crate::config::SidecarPaths>,
     pub providers: Option<Vec<crate::config::ProviderProfile>>,
     pub templates: Option<Vec<crate::config::SummaryTemplate>>,
@@ -564,6 +575,8 @@ impl Job {
             plain_transcript_path: None,
             chapters_path: None,
             glossary_hash: None,
+            media_purged_at: None,
+            transcript_edited_at: None,
             stop_requested: false,
             live_capture_active: false,
             error_message: None,

@@ -147,6 +147,9 @@ pub struct AppConfig {
     /// When true, auto pipeline runs Chapterize after merge when summarizing.
     #[serde(default = "default_true")]
     pub default_auto_chapterize: bool,
+    /// Send a system notification when a job reaches a terminal state.
+    #[serde(default = "default_true")]
+    pub notify_on_job_finish: bool,
     pub sidecar_paths: SidecarPaths,
     pub providers: Vec<ProviderProfile>,
     pub templates: Vec<SummaryTemplate>,
@@ -180,6 +183,7 @@ impl Default for AppConfig {
             transcribe_model_presets: TranscribeModelPresets::default(),
             glossary: GlossaryConfig::default(),
             default_auto_chapterize: true,
+            notify_on_job_finish: true,
             sidecar_paths: SidecarPaths {
                 ffmpeg: None,
                 ffprobe: None,
@@ -397,6 +401,9 @@ impl AppConfig {
         }
         if let Some(value) = request.default_auto_chapterize {
             candidate.default_auto_chapterize = value;
+        }
+        if let Some(value) = request.notify_on_job_finish {
+            candidate.notify_on_job_finish = value;
         }
         // When a named preset is active, sync `transcribe_model` from that slot.
         candidate.apply_transcribe_model_preset();
@@ -750,6 +757,7 @@ impl AppConfig {
             transcribe_model_presets: self.transcribe_model_presets.clone(),
             glossary: self.glossary.clone(),
             default_auto_chapterize: self.default_auto_chapterize,
+            notify_on_job_finish: self.notify_on_job_finish,
             sidecar_paths: self.sidecar_paths.clone(),
             providers: self
                 .providers
@@ -829,6 +837,8 @@ pub struct AppConfigPublic {
     pub glossary: GlossaryConfig,
     #[serde(default = "default_true")]
     pub default_auto_chapterize: bool,
+    #[serde(default = "default_true")]
+    pub notify_on_job_finish: bool,
     pub sidecar_paths: SidecarPaths,
     pub providers: Vec<ProviderProfilePublic>,
     pub templates: Vec<SummaryTemplate>,
@@ -1092,6 +1102,7 @@ mod tests {
             transcribe_model_presets: None,
             glossary: None,
             default_auto_chapterize: None,
+            notify_on_job_finish: None,
             sidecar_paths: None,
             providers: None,
             templates: None,

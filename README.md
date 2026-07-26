@@ -17,7 +17,15 @@
 
 ## 当前版本
 
-应用版本 **`0.2.5`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+应用版本 **`0.3.0`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+
+### v0.3.0
+
+- 任务完成系统通知：Job 成功/失败时发 Windows 通知（前台聚焦不弹；设置可关）
+- 工作区容量治理：占用统计、按媒体体积排序、单任务「清理媒体保留文字资产」
+- 转写文本校对：任务详情按字幕行编辑，保存同步回写 `srt.srt` + `plain.txt` 并自动备份；章节/总结失效重跑
+- 媒体播放与字幕联动预览：应用内播放产物；`.ts`/`.mkv` 一键转封装 `media/preview.mp4`；点字幕行跳转、播放高亮跟随
+- 抖音视频下载修复：拉流 403 时自动改用 yt-dlp 直下已解析的 play URL（无需 Cookie），并保留解析标题
 
 ### v0.2.5
 

@@ -179,6 +179,10 @@ export interface Job {
   plain_transcript_path?: string | null;
   chapters_path?: string | null;
   glossary_hash?: string | null;
+  /** Set when media/ was manually purged (text assets kept). */
+  media_purged_at?: string | null;
+  /** Set when the merged transcript was manually proofread. */
+  transcript_edited_at?: string | null;
   stop_requested: boolean;
   live_capture_active: boolean;
   error_message?: string | null;
@@ -257,6 +261,8 @@ export interface AppConfigPublic {
   transcribe_model_presets?: TranscribeModelPresets;
   glossary?: GlossaryConfig;
   default_auto_chapterize?: boolean;
+  /** System notification when a job reaches a terminal state; omitted on older configs → true. */
+  notify_on_job_finish?: boolean;
   sidecar_paths: SidecarPaths;
   providers: ProviderProfilePublic[];
   templates: SummaryTemplate[];
@@ -286,6 +292,7 @@ export interface SaveConfigRequest {
   transcribe_model_presets?: TranscribeModelPresets | null;
   glossary?: GlossaryConfig | null;
   default_auto_chapterize?: boolean | null;
+  notify_on_job_finish?: boolean | null;
   sidecar_paths?: SidecarPaths | null;
   providers?: ProviderProfileInput[] | null;
   templates?: SummaryTemplate[] | null;
@@ -451,4 +458,68 @@ export interface SystemDiagnostics {
   dependency: DependencyReport;
   models: ModelInventory;
   workspace_health: WorkspaceHealthReport;
+}
+
+/** Per-job disk usage entry (v0.3 capacity governance). */
+export interface JobUsage {
+  job_id: string;
+  title: string;
+  status: JobStatus;
+  media_bytes: number;
+  /** transcript + summary + logs + source.json (long-lived text assets). */
+  text_bytes: number;
+  total_bytes: number;
+  media_purged: boolean;
+}
+
+export interface WorkspaceUsageReport {
+  workspace_dir: string;
+  free_disk_gb?: number | null;
+  total_bytes: number;
+  total_media_bytes: number;
+  /** Sorted by media_bytes descending. */
+  jobs: JobUsage[];
+}
+
+/** One subtitle cue from the merged transcript/srt.srt (v0.3 proofreading). */
+export interface TranscriptCue {
+  /** 0-based position in the parsed cue list (stable edit key). */
+  index: number;
+  start_ms: number;
+  end_ms: number;
+  timing_line: string;
+  text: string;
+}
+
+export interface TranscriptCueDocument {
+  has_srt: boolean;
+  cues: TranscriptCue[];
+  plain_text: string;
+  plain_exists: boolean;
+}
+
+export interface SaveTranscriptEditRequest {
+  job_id: string;
+  cues?: Array<{ index: number; text: string }> | null;
+  plain_text?: string | null;
+}
+
+/** One media file entry for in-app preview (v0.3). */
+export interface JobMediaFile {
+  file_name: string;
+  /** Absolute path for convertFileSrc. */
+  absolute_path: string;
+  size_bytes: number;
+  /** original | segment | merged | preview | other */
+  kind: string;
+  /** direct | maybe | incompatible */
+  playability: string;
+  is_audio: boolean;
+}
+
+export interface JobMediaOverview {
+  files: JobMediaFile[];
+  has_preview: boolean;
+  has_srt: boolean;
+  media_purged: boolean;
 }

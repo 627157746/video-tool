@@ -9,7 +9,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 
 #[derive(Debug, Clone)]
 enum QueuedWorkKind {
@@ -278,6 +279,11 @@ pub fn spawn_job_run(
     if runner.is_job_queued(&job_id) {
         return Err(AppError::message("该任务已在排队中"));
     }
+    if job.media_purged_at.is_some() && matches!(step, Some(JobStep::Transcribe)) {
+        return Err(AppError::message(
+            "媒体已清理，无法重跑转写；下载任务可重跑「获取媒体」步骤重新下载",
+        ));
+    }
 
     let requires_live_slot = job_requires_live_slot(&job, step.as_ref());
     let work = QueuedWork {
@@ -302,6 +308,11 @@ pub fn spawn_transcript_segment_retry(
         .any(|segment| segment.id == segment_id)
     {
         return Err(AppError::message(format!("转写分段不存在: {segment_id}")));
+    }
+    if job.media_purged_at.is_some() {
+        return Err(AppError::message(
+            "媒体已清理，无法重试转写分段；下载任务可重跑「获取媒体」步骤重新下载",
+        ));
     }
     if runner.is_job_running(&job_id) {
         return Err(AppError::message("该任务已在执行中"));
@@ -438,6 +449,7 @@ fn start_queued_work(
             }
         }
         runner.end(&job_id);
+        notify_job_finished(&app, &config, &job_id);
         pump_queue(app, config, runner);
     });
 
@@ -465,6 +477,7 @@ fn pump_queue(app: AppHandle, previous_config: AppConfig, runner: Arc<RunnerStat
                 failed_job.updated_at = Utc::now();
                 let _ = workspace::save_job(config.workspace_path(), &failed_job);
                 let _ = emit_job_updated(&app, &failed_job);
+                notify_job_finished(&app, &config, &job_id);
             }
             continue;
         }
@@ -492,6 +505,8 @@ fn run_transcript_segment_retry(
     job.error_message = None;
     job.error_code = None;
     job.invalidate_after_step(&JobStep::Transcribe);
+    // The retry wipes merged artifacts, so any manual proofreading is gone too.
+    job.transcript_edited_at = None;
     begin_step(app, &workspace_root, &mut job, JobStep::Transcribe)?;
     paths::remove_downstream_artifacts(&job_dir, &JobStep::Transcribe)?;
     let sidecars = runner.resolve_sidecars(&config.sidecar_paths);
@@ -610,6 +625,13 @@ fn run_job_steps(
 
         match result {
             Ok(()) => {
+                match step {
+                    // Re-obtaining media invalidates a previous manual purge.
+                    JobStep::Ingest => job.media_purged_at = None,
+                    // Regenerated merge output supersedes manual proofreading.
+                    JobStep::MergeTranscript => job.transcript_edited_at = None,
+                    _ => {}
+                }
                 let detail = step_success_detail(&step, &job);
                 job.set_step_status(&step, StepStatus::Succeeded, Some(detail));
                 job.progress = 100.0;
@@ -821,6 +843,68 @@ fn persist(app: &AppHandle, workspace_root: &Path, job: &mut Job) -> AppResult<(
 fn emit_job_updated(app: &AppHandle, job: &Job) -> AppResult<()> {
     app.emit("job-updated", job)
         .map_err(|error| AppError::message(format!("emit job-updated failed: {error}")))
+}
+
+fn main_window_is_focused(app: &AppHandle) -> bool {
+    app.get_webview_window("main")
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(false)
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max_chars).collect();
+    format!("{truncated}…")
+}
+
+/// Best-effort system notification when a job reaches a terminal state.
+/// Reloads config so the toggle reflects the latest saved setting; never
+/// affects pipeline results. Suppressed while the main window is focused.
+fn notify_job_finished(app: &AppHandle, fallback_config: &AppConfig, job_id: &str) {
+    let config = AppConfig::load_or_init().unwrap_or_else(|_| fallback_config.clone());
+    if !config.notify_on_job_finish {
+        return;
+    }
+    let Ok(job) = workspace::load_job(config.workspace_path(), job_id) else {
+        return;
+    };
+    let body = match job.status {
+        JobStatus::Succeeded => "任务已完成".to_string(),
+        JobStatus::Failed => {
+            let raw_message = job
+                .error_message
+                .clone()
+                .unwrap_or_else(|| "未知错误".to_string());
+            let message = truncate_chars(&raw_message, 120);
+            match job.error_code.as_deref().filter(|code| !code.is_empty()) {
+                Some(code) => format!("任务失败（{code}）：{message}"),
+                None => format!("任务失败：{message}"),
+            }
+        }
+        _ => return,
+    };
+    if main_window_is_focused(app) {
+        return;
+    }
+    let raw_title = job
+        .source
+        .title
+        .clone()
+        .or_else(|| job.source.url.clone())
+        .or_else(|| job.source.local_path.clone())
+        .unwrap_or_else(|| job.id.clone());
+    let title = truncate_chars(&raw_title, 60);
+    if let Err(error) = app
+        .notification()
+        .builder()
+        .title(&title)
+        .body(&body)
+        .show()
+    {
+        eprintln!("job finish notification skipped for {job_id}: {error}");
+    }
 }
 
 fn redact_error(config: &AppConfig, error: &impl ToString) -> String {

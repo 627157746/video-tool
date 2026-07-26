@@ -1,8 +1,8 @@
 # video-tool 产品规格（共识文档）
 
-> 状态：**v0.2 已交付**（应用版本 `0.2.5`）；v0.1 为基线，第 14 节为 v0.2 已实现能力说明（原路线图，非未交付清单）  
+> 状态：**v0.3 已交付**（应用版本 `0.3.0`）；v0.1 为基线，第 14 节为 v0.2 已实现能力说明（原路线图，非未交付清单）  
 > 目标用户：仅自己使用，架构按「可演进到小范围分发」预留  
-> 版本：`0.2.5` = v0.1 定稿能力 + 第 14 节 P0–P4 MVP + 应用内下载安装更新 + 保存视频/音频二选一 + 抖音直播原生流解析；后置能力仍见各节「非目标」  
+> 版本：`0.3.0` = v0.2.5 全部能力 + 任务完成系统通知 + 工作区容量治理 + 转写文本校对 + 媒体播放与字幕联动预览（决策日志 21–24 条）；后置能力仍见各节「非目标」  
 > 包管理：**pnpm**（不要使用 npm / yarn）  
 > 文档用途：实现与任务拆分时的单一事实来源；改需求先改本文再改代码
 
@@ -186,13 +186,16 @@ workspace/
         original.*          # 下载或录制原始产物（可多段）
         segment_001.*       # 直播分段示例命名（实现可调整，需在 source.json 索引）
         merged.*            # 可选：分段合并后的媒体
+        preview.mp4         # 可选：应用内预览副本（ffmpeg -c copy 转封装；不进入流水线媒体索引，v0.3）
       transcript/
         segments/           # 每段转写原始结果
           segment_001.json
           segment_001.txt
           segment_001.srt
         plain.txt           # 合并后的纯文本（总结主输入）
+        plain.prev.txt      # 可选：手工校对前的上一版全文备份（v0.3）
         srt.srt             # 可选：合并字幕
+        srt.prev.srt        # 可选：手工校对前的上一版字幕备份（v0.3）
         raw.json            # 可选：合并后带时间轴结构
       summary/
         summary.md          # 主模板总结产出（兼容路径）
@@ -417,7 +420,12 @@ models = ["claude-sonnet-4-5", "claude-opus-4-5"]
 17. v0.2 路线图选型锁定（见第 14 节）：全局队列、跨 Job 检索、转写质量与失败向导、批量 URL、Cookie 辅助下载、章节大纲、术语表、多模板多产物、以及依赖/模型/配置迁移/检查更新等安装分发体验；**先写规格再实现**  
 18. **v0.2 交付**（2026-07-21）：第 14 节 P0–P4 MVP 已实现；应用版本号升至 **`0.2.0`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）  
 19. **保存视频 / 保存音频二选一**（2026-07-24，应用 **`0.2.4`**）：`JobSource.media_save_mode` 为 exclusive `video` \| `audio`；音频路径禁止先完整落盘视频再转（yt-dlp 直接音频；抖音 ffmpeg `-i play_url -vn`；直播仅 map 音频轨）  
-20. **抖音直播原生流解析**（2026-07-24，应用 **`0.2.5`**）：`live.douyin.com` 房间页优先解析 `room.stream_url` 的 FLV/HLS 拉流地址；streamlink 失败时不得把房间 HTML 当作 ffmpeg 输入
+20. **抖音直播原生流解析**（2026-07-24，应用 **`0.2.5`**）：`live.douyin.com` 房间页优先解析 `room.stream_url` 的 FLV/HLS 拉流地址；streamlink 失败时不得把房间 HTML 当作 ffmpeg 输入  
+21. **任务完成系统通知**（2026-07-26，v0.3 起）：`tauri-plugin-notification`；仅 Job 终态（成功/失败各一条）触发，主窗口聚焦时抑制；配置 `notify_on_job_finish`（默认 `true`，Serde 默认兼容旧配置，配置导出包含该开关）；通知文案含任务标题（截断）与失败 `error_code`，不含 Key/Cookie  
+22. **工作区容量治理**（2026-07-26，v0.3）：纯手动逐 Job 清理——`purge_job_media` 删除 `media/` 全部内容（含 preview 副本），保留 transcript/summary/logs/source.json；`Job.media_purged_at` 标记；清理后转写/分段重试被禁止（后端守卫 + UI 禁用），下载类重跑 ingest 成功后清除标记；`get_workspace_usage` 提供总占用/剩余空间/按媒体体积降序的 Job 列表；**不做**自动清理策略  
+23. **转写文本校对**（2026-07-26，v0.3）：按字幕 cue 编辑（`srt.srt` 为编辑事实源），保存同步回写 `srt.srt` + `plain.txt`（时间轴不变，仅文本；空文本删行）；保存前备份 `srt.prev.srt` / `plain.prev.txt`（覆盖式单版本）；`Job.transcript_edited_at` 标记；保存后 Chapterize/Summarize 失效需重跑；重跑合并/分段重试/选段变更前 UI 弹覆盖警告，执行后清除标记；无 SRT 任务降级整篇编辑 `plain.txt`；不回写 `transcript/segments/*`，`raw.json` 保持原样（known 不一致）  
+24. **媒体播放与字幕联动预览**（2026-07-26，v0.3）：启用 assetProtocol（运行时 `allow_directory` 仅授权工作区目录，含工作区切换）；任务详情「预览」分区应用内播放；不兼容容器（.ts/.flv 等）一键 `ffmpeg -c copy` 转封装 `media/preview.mp4`（TS/FLV 源附加 `-bsf:a aac_adtstoasc`；多段 concat）；preview.mp4 **不进入**流水线媒体索引与转写输入；字幕列表联动（点 cue 跳转、播放高亮跟随）；不做画面内嵌字幕渲染与重编码兜底  
+25. **抖音视频下载降级链**（2026-07-26，v0.3.0）：play 端点对 reqwest 直连 403（请求头无关，疑似 TLS 指纹风控；同 URL yt-dlp 可下）。降级链锁定为：原生 HTTP（桌面裸请求 → 移动 UA+Referer+分享页 Cookie，逐 play_addr.url_list 候选）→ **yt-dlp 直下已解析 play URL**（generic 提取器，无需 Cookie，保留解析标题）→ yt-dlp 分享页短链兜底；每次尝试的档位与状态写入 download.log
 
 ---
 

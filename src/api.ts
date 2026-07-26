@@ -305,3 +305,35 @@ export async function getSystemDiagnostics(): Promise<
 > {
   return invoke("get_system_diagnostics");
 }
+
+export async function getWorkspaceUsage(): Promise<
+  import("./types").WorkspaceUsageReport
+> {
+  return invoke("get_workspace_usage");
+}
+
+export async function purgeJobMedia(jobId: string): Promise<Job> {
+  return invoke<Job>("purge_job_media", { jobId });
+}
+
+export async function getTranscriptCues(
+  jobId: string,
+): Promise<import("./types").TranscriptCueDocument> {
+  return invoke("get_transcript_cues", { jobId });
+}
+
+export async function saveTranscriptEdit(
+  request: import("./types").SaveTranscriptEditRequest,
+): Promise<Job> {
+  return invoke<Job>("save_transcript_edit", { request });
+}
+
+export async function getJobMediaOverview(
+  jobId: string,
+): Promise<import("./types").JobMediaOverview> {
+  return invoke("get_job_media_overview", { jobId });
+}
+
+export async function generateMediaPreview(jobId: string): Promise<string> {
+  return invoke<string>("generate_media_preview", { jobId });
+}

@@ -365,6 +365,117 @@ pub fn repair_workspace_health(
     Ok(report)
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct JobUsage {
+    pub job_id: String,
+    pub title: String,
+    pub status: JobStatus,
+    pub media_bytes: u64,
+    /// transcript + summary + logs + source.json (long-lived text assets).
+    pub text_bytes: u64,
+    pub total_bytes: u64,
+    pub media_purged: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceUsageReport {
+    pub workspace_dir: String,
+    pub free_disk_gb: Option<u64>,
+    pub total_bytes: u64,
+    pub total_media_bytes: u64,
+    /// Sorted by `media_bytes` descending.
+    pub jobs: Vec<JobUsage>,
+}
+
+fn directory_size_bytes(path: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            total += directory_size_bytes(&entry.path());
+        } else if let Ok(metadata) = entry.metadata() {
+            total += metadata.len();
+        }
+    }
+    total
+}
+
+pub fn compute_workspace_usage(
+    workspace_root: impl AsRef<Path>,
+) -> AppResult<WorkspaceUsageReport> {
+    let workspace_root = workspace_root.as_ref();
+    let free_disk_gb = crate::pipeline::paths::free_disk_gb(workspace_root);
+
+    let mut job_usages = Vec::new();
+    let mut total_media_bytes = 0u64;
+    let mut total_bytes = 0u64;
+
+    for job in list_jobs(workspace_root)? {
+        let Ok(job_dir) = validated_job_dir(workspace_root, &job.id) else {
+            continue;
+        };
+        let media_bytes = directory_size_bytes(&job_dir.join("media"));
+        let job_total_bytes = directory_size_bytes(&job_dir);
+        let text_bytes = job_total_bytes.saturating_sub(media_bytes);
+        total_media_bytes += media_bytes;
+        total_bytes += job_total_bytes;
+        job_usages.push(JobUsage {
+            job_id: job.id.clone(),
+            title: job.display_title(),
+            status: job.status.clone(),
+            media_bytes,
+            text_bytes,
+            total_bytes: job_total_bytes,
+            media_purged: job.media_purged_at.is_some(),
+        });
+    }
+
+    // Index directory (search FTS) also lives in the workspace.
+    total_bytes += directory_size_bytes(&workspace_root.join("index"));
+
+    job_usages.sort_by(|left, right| right.media_bytes.cmp(&left.media_bytes));
+
+    Ok(WorkspaceUsageReport {
+        workspace_dir: workspace_root.to_string_lossy().replace('\\', "/"),
+        free_disk_gb,
+        total_bytes,
+        total_media_bytes,
+        jobs: job_usages,
+    })
+}
+
+/// Delete everything under `media/` (segments, merged, preview copy) while
+/// keeping transcript / summary / logs / source.json. Marks the job as purged.
+pub fn purge_job_media(workspace_root: impl AsRef<Path>, job_id: &str) -> AppResult<Job> {
+    let workspace_root = workspace_root.as_ref();
+    let job_dir = validated_job_dir(workspace_root, job_id)?;
+    let mut job = load_job(workspace_root, job_id)?;
+
+    let media_dir = job_dir.join("media");
+    if media_dir.is_dir() {
+        for entry in fs::read_dir(&media_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                fs::remove_dir_all(path)?;
+            } else {
+                fs::remove_file(path)?;
+            }
+        }
+    }
+
+    job.media_purged_at = Some(chrono::Utc::now());
+    job.live_capture_active = false;
+    job.updated_at = chrono::Utc::now();
+    save_job(workspace_root, &job)?;
+    Ok(job)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

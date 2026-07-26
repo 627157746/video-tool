@@ -120,35 +120,31 @@ pub fn record_live_segments(
             }
         }
 
-        let resolved_source = match resolve_live_source(
-            source_url,
-            &sidecars.streamlink,
-            job_dir,
-            &stop_requested,
-        ) {
-            Ok(resolved) => resolved,
-            Err(_) if stop_requested.load(Ordering::SeqCst) => {
-                termination = Some(RecordTermination::StoppedByUser);
-                break;
-            }
-            Err(error) => {
-                last_error = error.to_string();
-                let _ = logs::append_log(
-                    job_dir,
-                    "record",
-                    &format!("resolve live source failed: {last_error}"),
-                );
-                if attempt < reconnect_attempts {
-                    let _ = logs::append_log(job_dir, "record", "等待 3 秒后重试解析流地址");
-                    std::thread::sleep(Duration::from_secs(3));
-                    continue;
+        let resolved_source =
+            match resolve_live_source(source_url, &sidecars.streamlink, job_dir, &stop_requested) {
+                Ok(resolved) => resolved,
+                Err(_) if stop_requested.load(Ordering::SeqCst) => {
+                    termination = Some(RecordTermination::StoppedByUser);
+                    break;
                 }
-                termination = Some(RecordTermination::ReconnectExhausted {
-                    detail: last_error.clone(),
-                });
-                break;
-            }
-        };
+                Err(error) => {
+                    last_error = error.to_string();
+                    let _ = logs::append_log(
+                        job_dir,
+                        "record",
+                        &format!("resolve live source failed: {last_error}"),
+                    );
+                    if attempt < reconnect_attempts {
+                        let _ = logs::append_log(job_dir, "record", "等待 3 秒后重试解析流地址");
+                        std::thread::sleep(Duration::from_secs(3));
+                        continue;
+                    }
+                    termination = Some(RecordTermination::ReconnectExhausted {
+                        detail: last_error.clone(),
+                    });
+                    break;
+                }
+            };
         if stop_requested.load(Ordering::SeqCst) {
             termination = Some(RecordTermination::StoppedByUser);
             break;

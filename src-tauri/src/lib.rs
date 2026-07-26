@@ -72,6 +72,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(application_instance_lock)
         .manage(AppState {
             config: Mutex::new(app_config),
@@ -105,6 +106,12 @@ pub fn run() {
             commands::get_job_summaries,
             commands::get_job_chapters,
             commands::get_transcript_segment_texts,
+            commands::get_transcript_cues,
+            commands::save_transcript_edit,
+            commands::get_job_media_overview,
+            commands::generate_media_preview,
+            commands::get_workspace_usage,
+            commands::purge_job_media,
             commands::search_workspace,
             commands::rebuild_search_index,
             commands::get_job_log,
@@ -131,6 +138,21 @@ pub fn run() {
             app.state::<AppState>()
                 .runner
                 .set_bundled_sidecar_root(bundled_sidecar_root);
+
+            // Media preview reads workspace files through the asset protocol;
+            // scope is granted at runtime so a configurable workspace works.
+            let workspace_path = app
+                .state::<AppState>()
+                .config
+                .lock()
+                .expect("config lock")
+                .workspace_path();
+            if let Err(error) = app
+                .asset_protocol_scope()
+                .allow_directory(&workspace_path, true)
+            {
+                eprintln!("failed to allow asset scope for workspace: {error}");
+            }
 
             let mut tray_builder = TrayIconBuilder::new()
                 .tooltip("video-tool - 点击恢复窗口")

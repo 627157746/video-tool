@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 
 const EXPORT_FORMAT_VERSION: u32 = 1;
 
+fn default_notify_on_job_finish() -> bool {
+    true
+}
+
 /// Built-in GitHub release source for this project.
 /// Override with `VIDEO_TOOL_RELEASE_API` / `VIDEO_TOOL_RELEASE_PAGE` if needed.
 const DEFAULT_RELEASE_OWNER: &str = "627157746";
@@ -114,6 +118,9 @@ pub struct ConfigExportPackage {
     pub transcribe_model_presets: crate::config::TranscribeModelPresets,
     pub glossary: crate::config::GlossaryConfig,
     pub default_auto_chapterize: bool,
+    /// System notification toggle; omitted on older export packages → true.
+    #[serde(default = "default_notify_on_job_finish")]
+    pub notify_on_job_finish: bool,
     pub sidecar_paths: SidecarPaths,
     pub providers: Vec<ProviderExport>,
     pub templates: Vec<SummaryTemplate>,
@@ -445,6 +452,7 @@ pub fn export_config_package(config: &AppConfig, include_secrets: bool) -> Confi
         transcribe_model_presets: config.transcribe_model_presets.clone(),
         glossary: config.glossary.clone(),
         default_auto_chapterize: config.default_auto_chapterize,
+        notify_on_job_finish: config.notify_on_job_finish,
         sidecar_paths: config.sidecar_paths.clone(),
         providers,
         templates: config.templates.clone(),
@@ -498,6 +506,7 @@ pub fn apply_import_package(
     next.transcribe_model_presets = package.transcribe_model_presets;
     next.glossary = package.glossary;
     next.default_auto_chapterize = package.default_auto_chapterize;
+    next.notify_on_job_finish = package.notify_on_job_finish;
     next.sidecar_paths = package.sidecar_paths;
     next.templates = package.templates;
     next.job_groups = package.job_groups;

@@ -84,6 +84,15 @@ pub fn save_config(
     candidate.ensure_workspace()?;
     if workspace_changed {
         workspace::recover_interrupted_jobs(candidate.workspace_path())?;
+        // Media preview reads through the asset protocol; extend scope to the
+        // new workspace so previews keep working without a restart.
+        use tauri::Manager;
+        if let Err(error) = app
+            .asset_protocol_scope()
+            .allow_directory(candidate.workspace_path(), true)
+        {
+            eprintln!("failed to allow asset scope for new workspace: {error}");
+        }
     }
 
     let removed_group_ids = collect_removed_job_group_ids(&current_config, &candidate);
@@ -557,6 +566,8 @@ pub fn select_job_segments(
         segment.selected_for_summary = job.selected_segment_ids.contains(&segment.id);
     }
     job.invalidate_after_step(&crate::models::JobStep::Transcribe);
+    // Re-merge will regenerate plain/srt, discarding any manual proofreading.
+    job.transcript_edited_at = None;
     let job_dir = workspace::validated_job_dir(config.workspace_path(), &job.id)?;
     job.refresh_derived_status();
     job.updated_at = chrono::Utc::now();
@@ -965,6 +976,126 @@ pub struct TranscriptSegmentTexts {
     pub segment_id: String,
     pub current: String,
     pub previous: Option<String>,
+}
+
+/// Request envelope for manual transcript proofreading (v0.3).
+/// Either `cues` (SRT jobs) or `plain_text` (fallback) must be provided.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SaveTranscriptEditRequest {
+    pub job_id: String,
+    #[serde(default)]
+    pub cues: Option<Vec<pipeline::transcript_edit::CueTextEdit>>,
+    #[serde(default)]
+    pub plain_text: Option<String>,
+}
+
+fn ensure_job_idle_for_edit(state: &State<'_, AppState>, job_id: &str) -> AppResult<()> {
+    if state.runner.is_job_running(job_id) {
+        return Err(AppError::message("任务运行期间不能执行该操作"));
+    }
+    if state.runner.is_job_queued(job_id) {
+        return Err(AppError::message("任务排队期间不能执行该操作"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_transcript_cues(
+    state: State<'_, AppState>,
+    job_id: String,
+) -> AppResult<pipeline::transcript_edit::TranscriptCueDocument> {
+    let config = state.config.lock().expect("config lock");
+    let job_dir = workspace::validated_job_dir(config.workspace_path(), &job_id)?;
+    pipeline::transcript_edit::load_cue_document(&job_dir)
+}
+
+#[tauri::command]
+pub fn save_transcript_edit(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: SaveTranscriptEditRequest,
+) -> AppResult<Job> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    ensure_job_idle_for_edit(&state, &request.job_id)?;
+
+    let config = state.config.lock().expect("config lock");
+    let workspace_path = config.workspace_path();
+    let job_dir = workspace::validated_job_dir(&workspace_path, &request.job_id)?;
+    let mut job = workspace::load_job(&workspace_path, &request.job_id)?;
+
+    match (&request.cues, &request.plain_text) {
+        (Some(cue_edits), _) if !cue_edits.is_empty() => {
+            pipeline::transcript_edit::save_cue_edits(&job_dir, cue_edits)?;
+        }
+        (_, Some(plain_text)) => {
+            pipeline::transcript_edit::save_plain_edit(&job_dir, plain_text)?;
+        }
+        _ => {
+            return Err(AppError::message("没有需要保存的校对内容"));
+        }
+    }
+
+    job.transcript_edited_at = Some(chrono::Utc::now());
+    // Downstream chapters / summaries were produced from the pre-edit text.
+    job.invalidate_after_step(&crate::models::JobStep::MergeTranscript);
+    pipeline::paths::remove_downstream_artifacts(&job_dir, &crate::models::JobStep::Chapterize)?;
+    job.refresh_derived_status();
+    job.updated_at = chrono::Utc::now();
+    workspace::save_job(&workspace_path, &job)?;
+    if let Err(error) = crate::search::upsert_job(&workspace_path, &job) {
+        eprintln!("search index upsert skipped for {}: {error}", job.id);
+    }
+    use tauri::Emitter;
+    let _ = app.emit("job-updated", &job);
+    Ok(job)
+}
+
+#[tauri::command]
+pub fn get_job_media_overview(
+    state: State<'_, AppState>,
+    job_id: String,
+) -> AppResult<pipeline::preview::JobMediaOverview> {
+    let config = state.config.lock().expect("config lock");
+    let job_dir = workspace::validated_job_dir(config.workspace_path(), &job_id)?;
+    let job = workspace::load_job(config.workspace_path(), &job_id)?;
+    pipeline::preview::build_media_overview(&job_dir, job.media_purged_at.is_some())
+}
+
+#[tauri::command]
+pub fn generate_media_preview(state: State<'_, AppState>, job_id: String) -> AppResult<String> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    ensure_job_idle_for_edit(&state, &job_id)?;
+    let (job_dir, sidecars) = {
+        let config = state.config.lock().expect("config lock");
+        let job_dir = workspace::validated_job_dir(config.workspace_path(), &job_id)?;
+        let sidecars = state.runner.resolve_sidecars(&config.sidecar_paths);
+        (job_dir, sidecars)
+    };
+    pipeline::preview::generate_preview(&job_dir, &sidecars.ffmpeg)
+}
+
+#[tauri::command]
+pub fn get_workspace_usage(
+    state: State<'_, AppState>,
+) -> AppResult<workspace::WorkspaceUsageReport> {
+    let config = state.config.lock().expect("config lock");
+    config.ensure_workspace()?;
+    workspace::compute_workspace_usage(config.workspace_path())
+}
+
+#[tauri::command]
+pub fn purge_job_media(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job_id: String,
+) -> AppResult<Job> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    ensure_job_idle_for_edit(&state, &job_id)?;
+    let workspace_path = state.config.lock().expect("config lock").workspace_path();
+    let job = workspace::purge_job_media(&workspace_path, &job_id)?;
+    use tauri::Emitter;
+    let _ = app.emit("job-updated", &job);
+    Ok(job)
 }
 
 #[tauri::command]

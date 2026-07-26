@@ -126,6 +126,9 @@ import {
   unwrapOuterMarkdownFence,
 } from "./jobUtils";
 import { PathPickerField } from "./components/PathPickerField";
+import { CapacityPanel } from "./components/CapacityPanel";
+import { MediaPreviewPanel } from "./components/MediaPreviewPanel";
+import { TranscriptProofreadPanel } from "./components/TranscriptProofreadPanel";
 import "./App.css";
 
 interface SettingsPathSelectionOptions {
@@ -281,6 +284,8 @@ function App() {
   const [settingsGlossaryPostReplace, setSettingsGlossaryPostReplace] =
     useState(true);
   const [settingsAutoChapterize, setSettingsAutoChapterize] = useState(true);
+  const [settingsNotifyOnJobFinish, setSettingsNotifyOnJobFinish] =
+    useState(true);
   const [chaptersText, setChaptersText] = useState("");
   const [segmentDiffText, setSegmentDiffText] = useState<string | null>(null);
   const [settingsDefaultProviderId, setSettingsDefaultProviderId] = useState("");
@@ -346,6 +351,7 @@ function App() {
     setSettingsAutoTranscribe(nextConfig.default_auto_transcribe);
     setSettingsAutoSummarize(nextConfig.default_auto_summarize);
     setSettingsAutoChapterize(nextConfig.default_auto_chapterize ?? true);
+    setSettingsNotifyOnJobFinish(nextConfig.notify_on_job_finish ?? true);
     setSettingsProxy(nextConfig.proxy_url ?? "");
     setSettingsMinDisk(nextConfig.min_free_disk_gb);
     setSettingsReconnect(nextConfig.live_reconnect_attempts);
@@ -1644,6 +1650,14 @@ function App() {
     if (job.status === "running" || segmentSelectionInFlightRef.current) {
       return;
     }
+    if (job.transcript_edited_at) {
+      const confirmed = window.confirm(
+        "该任务的转写文本已手工校对；修改选段会重建合并文字并覆盖校对结果。确定继续吗？",
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
     const selectedIds = job.selected_segment_ids.includes(segmentId)
       ? job.selected_segment_ids.filter((id) => id !== segmentId)
       : [...job.selected_segment_ids, segmentId];
@@ -1667,6 +1681,16 @@ function App() {
   }
 
   async function handleRetrySegment(jobId: string, segmentId: string) {
+    const currentJob =
+      selectedJobRef.current?.id === jobId ? selectedJobRef.current : null;
+    if (currentJob?.transcript_edited_at) {
+      const confirmed = window.confirm(
+        "该任务的转写文本已手工校对；重试分段会重建合并文字并覆盖校对结果。确定继续吗？",
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
     setIsBusy(true);
     try {
       setTranscriptText("");
@@ -1702,6 +1726,21 @@ function App() {
   }
 
   async function handleRun(jobId: string, step?: JobStep | null) {
+    const currentJob =
+      selectedJobRef.current?.id === jobId ? selectedJobRef.current : null;
+    const stepRegeneratesMergedTranscript =
+      step == null ||
+      step === "ingest" ||
+      step === "transcribe" ||
+      step === "merge_transcript";
+    if (currentJob?.transcript_edited_at && stepRegeneratesMergedTranscript) {
+      const confirmed = window.confirm(
+        "该任务的转写文本已手工校对；重跑该步骤会重新生成合并文字并覆盖校对结果。确定继续吗？",
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
     setIsBusy(true);
     setErrorMessage(null);
     try {
@@ -1825,6 +1864,7 @@ function App() {
         default_auto_transcribe: settingsAutoTranscribe,
         default_auto_summarize: settingsAutoSummarize,
         default_auto_chapterize: settingsAutoChapterize,
+        notify_on_job_finish: settingsNotifyOnJobFinish,
         proxy_url: settingsProxy,
         min_free_disk_gb: settingsMinDisk,
         live_reconnect_attempts: settingsReconnect,
@@ -2566,6 +2606,9 @@ function App() {
           return hasSummaryArtifact;
         }
         if (section.id === "transcript") {
+          return hasTranscriptArtifact;
+        }
+        if (section.id === "proofread") {
           return hasTranscriptArtifact;
         }
         return true;
@@ -3900,6 +3943,54 @@ function App() {
                             </div>
                           )}
 
+                        {jobDetailSection === "preview" && (
+                          <div
+                            id="job-detail-panel-preview"
+                            className="settings-section-panel"
+                            role="tabpanel"
+                            aria-labelledby="job-detail-nav-preview"
+                          >
+                            <MediaPreviewPanel
+                              jobId={selectedJob.id}
+                              isJobBusy={
+                                selectedJob.status === "running" ||
+                                selectedJob.status === "queued"
+                              }
+                              onError={setErrorMessage}
+                              onStatus={setStatusMessage}
+                            />
+                          </div>
+                        )}
+
+                        {jobDetailSection === "proofread" && (
+                          <div
+                            id="job-detail-panel-proofread"
+                            className="settings-section-panel"
+                            role="tabpanel"
+                            aria-labelledby="job-detail-nav-proofread"
+                          >
+                            <TranscriptProofreadPanel
+                              jobId={selectedJob.id}
+                              isJobBusy={
+                                selectedJob.status === "running" ||
+                                selectedJob.status === "queued"
+                              }
+                              transcriptEditedAt={
+                                selectedJob.transcript_edited_at
+                              }
+                              onError={setErrorMessage}
+                              onStatus={setStatusMessage}
+                              onSaved={(updatedJob) => {
+                                selectedJobRef.current = updatedJob;
+                                setSelectedJob(updatedJob);
+                                setTranscriptText("");
+                                setSummaryText("");
+                                setChaptersText("");
+                              }}
+                            />
+                          </div>
+                        )}
+
                         {jobDetailSection === "logs" && (
                           <div
                             id="job-detail-panel-logs"
@@ -4319,6 +4410,16 @@ function App() {
                         }
                       />
                       默认自动章节大纲（总结前）
+                    </label>
+                    <label className="checkbox">
+                      <input
+                        type="checkbox"
+                        checked={settingsNotifyOnJobFinish}
+                        onChange={(event) =>
+                          setSettingsNotifyOnJobFinish(event.target.checked)
+                        }
+                      />
+                      任务完成/失败时发送系统通知（窗口前台时不弹）
                     </label>
                   </div>
                   <label>
@@ -5152,6 +5253,37 @@ function App() {
                 )}
               </article>
               </div>
+                )}
+
+                {settingsSection === "capacity" && (
+                  <div
+                    id="settings-panel-capacity"
+                    className="settings-section-panel"
+                    role="tabpanel"
+                    aria-labelledby="settings-nav-capacity"
+                  >
+                    <CapacityPanel
+                      onOpenJob={(jobId) => {
+                        setView("jobs");
+                        void loadJobDetail(jobId);
+                      }}
+                      onJobsChanged={() => {
+                        void (async () => {
+                          const nextJobs = await listJobs();
+                          setJobs(nextJobs);
+                          if (selectedJobIdRef.current) {
+                            await loadJobDetail(
+                              selectedJobIdRef.current,
+                              logNameRef.current,
+                              false,
+                            );
+                          }
+                        })();
+                      }}
+                      onError={setErrorMessage}
+                      onStatus={setStatusMessage}
+                    />
+                  </div>
                 )}
 
                 {settingsSection === "backup" && (

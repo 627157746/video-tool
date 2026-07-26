@@ -54,6 +54,9 @@ pub fn list_media_files(job_dir: &Path) -> AppResult<Vec<String>> {
             || name.ends_with(".temp")
             || name.ends_with(".tmp")
             || name == "concat_list.txt"
+            || name == "preview_concat_list.txt"
+            // Preview remux copy is a playback aid, never pipeline input.
+            || name == "preview.mp4"
         {
             continue;
         }

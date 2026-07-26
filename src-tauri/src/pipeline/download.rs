@@ -10,7 +10,6 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 pub type DownloadProgressCallback = Arc<Mutex<dyn FnMut(f32) + Send>>;
 
@@ -198,8 +197,10 @@ pub fn run_download(
         match run_douyin_download(
             job_dir,
             raw_input,
+            yt_dlp,
             ffmpeg_path,
             media_save_mode,
+            cookies,
             on_progress.clone(),
         ) {
             Ok(result) => return Ok(result),
@@ -234,11 +235,14 @@ pub fn run_download(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_douyin_download(
     job_dir: &Path,
     raw_input: &str,
+    yt_dlp: &ResolvedBinary,
     ffmpeg_path: Option<&str>,
     media_save_mode: MediaSaveMode,
+    cookies: &DownloadCookiesOptions,
     on_progress: Option<DownloadProgressCallback>,
 ) -> AppResult<DownloadResult> {
     let media_dir = job_dir.join("media");
@@ -254,15 +258,18 @@ pub fn run_douyin_download(
         ),
     )?;
 
-    let resolved = douyin::resolve_douyin_media(raw_input)?;
+    // Cookie-enabled shared client: the play endpoint often 403s without
+    // the cookies (e.g. ttwid) set while fetching the share page.
+    let client = douyin::build_share_http_client()?;
+    let resolved = douyin::resolve_douyin_media_with_client(&client, raw_input)?;
     logs::append_log(
         job_dir,
         "download",
         &format!(
-            "resolved source_url: {}\nvideo_id: {}\nplay_url: {}\ntitle: {}\n",
+            "resolved source_url: {}\nvideo_id: {}\nplay_url candidates: {}\ntitle: {}\n",
             resolved.source_url,
             resolved.video_id,
-            resolved.play_url,
+            resolved.play_urls.len(),
             resolved.title.as_deref().unwrap_or("(none)")
         ),
     )?;
@@ -273,31 +280,126 @@ pub fn run_douyin_download(
 
     report_progress(&on_progress, 5.0);
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(300))
+    match open_first_working_play_stream(job_dir, &client, &resolved.play_urls) {
+        Ok(response) => {
+            write_play_stream_to_media(job_dir, &media_dir, &resolved, response, on_progress)
+        }
+        Err(native_error) => {
+            // Same-host requests from reqwest can be fingerprint-blocked while
+            // yt-dlp succeeds on the identical play URL (verified manually).
+            // Hand the resolved play URL to yt-dlp instead of the share page,
+            // which would require fresh cookies.
+            logs::append_log(
+                job_dir,
+                "download",
+                &format!(
+                    "native http stream failed: {native_error}\nretrying resolved play url via yt-dlp\n"
+                ),
+            )?;
+            let mut result = run_yt_dlp_download(
+                job_dir,
+                &resolved.play_url,
+                yt_dlp,
+                media_save_mode,
+                cookies,
+                on_progress,
+            )?;
+            result.resolved_title = resolved.title.clone();
+            Ok(result)
+        }
+    }
+}
+
+/// Header/client profiles tried per play URL. A plain desktop request with no
+/// Referer and no cookies mirrors yt-dlp's generic extractor, which is known
+/// to succeed where the mobile-UA + Referer + share-page-cookie combo 403s.
+fn play_stream_request_profiles(
+    share_client: &Client,
+) -> AppResult<Vec<(&'static str, Client, bool)>> {
+    let plain_client = Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent(douyin::DOUYIN_MOBILE_USER_AGENT)
+        .user_agent(douyin::DOUYIN_LIVE_DESKTOP_USER_AGENT)
         .build()
         .map_err(|error| AppError::message(format!("HTTP 客户端初始化失败: {error}")))?;
+    Ok(vec![
+        ("desktop-ua no-referer no-cookie", plain_client, false),
+        (
+            "mobile-ua referer share-cookies",
+            share_client.clone(),
+            true,
+        ),
+    ])
+}
 
-    let response = client
-        .get(&resolved.play_url)
-        .header(USER_AGENT, douyin::DOUYIN_MOBILE_USER_AGENT)
-        .header(REFERER, "https://www.douyin.com/")
-        .send()
-        .map_err(|error| {
-            AppError::message(format!(
-                "下载抖音视频流失败（网络错误）: {error}。请查看 logs/download.log。"
-            ))
-        })?;
-
-    let status = response.status();
-    if !status.is_success() {
-        return Err(AppError::message(format!(
-            "下载抖音视频流失败（HTTP {status}）。请查看 logs/download.log。"
-        )));
+/// Try each candidate play URL in order; return the first success response.
+fn open_first_working_play_stream(
+    job_dir: &Path,
+    share_client: &Client,
+    play_urls: &[String],
+) -> AppResult<reqwest::blocking::Response> {
+    let profiles = play_stream_request_profiles(share_client)?;
+    let mut last_failure = String::from("没有可用的播放地址");
+    for (candidate_index, play_url) in play_urls.iter().enumerate() {
+        for (profile_name, profile_client, send_douyin_headers) in &profiles {
+            logs::append_log(
+                job_dir,
+                "download",
+                &format!(
+                    "trying play url {}/{} [{profile_name}]: {play_url}\n",
+                    candidate_index + 1,
+                    play_urls.len()
+                ),
+            )?;
+            let mut request = profile_client.get(play_url);
+            if *send_douyin_headers {
+                request = request
+                    .header(USER_AGENT, douyin::DOUYIN_MOBILE_USER_AGENT)
+                    .header(REFERER, "https://www.douyin.com/");
+            }
+            match request.send() {
+                Ok(response) if response.status().is_success() => {
+                    return Ok(response);
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    last_failure = format!("HTTP {status}");
+                    logs::append_log(
+                        job_dir,
+                        "download",
+                        &format!(
+                            "play url {} [{profile_name}] rejected: HTTP {status}\n",
+                            candidate_index + 1
+                        ),
+                    )?;
+                }
+                Err(error) => {
+                    last_failure = format!("网络错误: {error}");
+                    logs::append_log(
+                        job_dir,
+                        "download",
+                        &format!(
+                            "play url {} [{profile_name}] failed: {error}\n",
+                            candidate_index + 1
+                        ),
+                    )?;
+                }
+            }
+        }
     }
+    Err(AppError::message(format!(
+        "下载抖音视频流失败（{last_failure}，已尝试 {} 个地址 × {} 组请求头）。请查看 logs/download.log。",
+        play_urls.len(),
+        profiles.len()
+    )))
+}
 
+fn write_play_stream_to_media(
+    job_dir: &Path,
+    media_dir: &Path,
+    resolved: &douyin::ResolvedDouyinMedia,
+    response: reqwest::blocking::Response,
+    on_progress: Option<DownloadProgressCallback>,
+) -> AppResult<DownloadResult> {
     let content_type = response
         .headers()
         .get(CONTENT_TYPE)
@@ -397,7 +499,7 @@ pub fn run_douyin_download(
         ))
     })?;
 
-    let media_files = list_media_files(&media_dir)?;
+    let media_files = list_media_files(media_dir)?;
     if media_files.is_empty() {
         return Err(AppError::message(
             "抖音下载完成但 media/ 中未找到文件。请查看 logs/download.log。",
@@ -418,7 +520,7 @@ pub fn run_douyin_download(
         media_files,
         tool_path: "douyin-share-page".to_string(),
         tool_version: Some(format!("video_id={}", resolved.video_id)),
-        resolved_title: resolved.title,
+        resolved_title: resolved.title.clone(),
     })
 }
 

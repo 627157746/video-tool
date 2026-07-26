@@ -8,6 +8,7 @@ export type SettingsSection =
   | "groups"
   | "sidecars"
   | "models"
+  | "capacity"
   | "backup"
   | "diagnostics";
 export type JobDetailSection =
@@ -15,6 +16,8 @@ export type JobDetailSection =
   | "pipeline"
   | "summarize"
   | "segments"
+  | "preview"
+  | "proofread"
   | "logs"
   | "summary"
   | "transcript";
@@ -94,6 +97,12 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{
     description: "扫描 GGML 模型目录、校验当前选用文件是否存在，并打开目录。",
   },
   {
+    id: "capacity",
+    label: "容量治理",
+    description:
+      "查看工作区磁盘占用、按体积排序任务；可清理单个任务的媒体文件（保留文字资产）。",
+  },
+  {
     id: "backup",
     label: "配置备份",
     description:
@@ -131,6 +140,18 @@ export const JOB_DETAIL_SECTIONS: ReadonlyArray<{
     id: "segments",
     label: "总结选段",
     description: "勾选参与合并与总结的转写分段；改选后需重跑合并与总结。",
+  },
+  {
+    id: "preview",
+    label: "预览",
+    description:
+      "应用内播放媒体产物；不兼容容器可一键生成 MP4 预览副本；点字幕行跳转播放位置。",
+  },
+  {
+    id: "proofread",
+    label: "校对",
+    description:
+      "按字幕行校对转写文本；保存后同步更新合并字幕与全文，章节/总结需重跑。",
   },
   {
     id: "logs",

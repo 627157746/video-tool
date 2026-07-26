@@ -33,15 +33,17 @@ const LIVE_ROOM_PATH_PATTERN: &str =
     r"(?i)(?:live\.douyin\.com/|douyin\.com/live/)([A-Za-z0-9_\-]+)";
 
 /// Prefer higher qualities first when selecting from flv/hls pull maps.
-const LIVE_QUALITY_PREFERENCE: &[&str] = &[
-    "FULL_HD1", "ORIGIN", "HD1", "SD1", "SD2", "LD1", "LD",
-];
+const LIVE_QUALITY_PREFERENCE: &[&str] = &["FULL_HD1", "ORIGIN", "HD1", "SD1", "SD2", "LD1", "LD"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedDouyinMedia {
     pub source_url: String,
     pub video_id: String,
+    /// Preferred (first) playback URL; kept for logging / compatibility.
     pub play_url: String,
+    /// All candidate playback URLs from `play_addr.url_list` (dedup, in order).
+    /// The play endpoint frequently 403s on one mirror while another works.
+    pub play_urls: Vec<String>,
     pub title: Option<String>,
 }
 
@@ -103,9 +105,7 @@ pub fn resolve_douyin_live_stream(raw_input: &str) -> AppResult<ResolvedDouyinLi
     let client = build_live_http_client()?;
     let html = fetch_live_room_html(&client, &source_url)?;
     let room = extract_live_room_value(&html).ok_or_else(|| {
-        AppError::message(
-            "无法从抖音直播页解析房间数据（页面结构可能已变化，或需要登录 Cookie）。",
-        )
+        AppError::message("无法从抖音直播页解析房间数据（页面结构可能已变化，或需要登录 Cookie）。")
     })?;
 
     let status = room
@@ -129,23 +129,18 @@ pub fn resolve_douyin_live_stream(raw_input: &str) -> AppResult<ResolvedDouyinLi
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|value| !value.is_empty())
-        .or_else(|| {
-            if room_id_from_url.is_empty() {
-                None
-            } else {
-                Some(room_id_from_url)
-            }
-        })
+        .or_else(|| (!room_id_from_url.is_empty()).then_some(room_id_from_url))
         .unwrap_or_else(|| "unknown".to_string());
 
-    let stream_url_value = room.get("stream_url").ok_or_else(|| {
-        AppError::message("直播间数据中缺少 stream_url，无法获取拉流地址。")
-    })?;
-    let (quality, protocol, stream_url) = select_live_pull_url(stream_url_value).ok_or_else(|| {
-        AppError::message(
-            "直播间已开播，但未找到可用的 flv/hls 拉流地址。可稍后重试或检查是否被风控。",
-        )
-    })?;
+    let stream_url_value = room
+        .get("stream_url")
+        .ok_or_else(|| AppError::message("直播间数据中缺少 stream_url，无法获取拉流地址。"))?;
+    let (quality, protocol, stream_url) =
+        select_live_pull_url(stream_url_value).ok_or_else(|| {
+            AppError::message(
+                "直播间已开播，但未找到可用的 flv/hls 拉流地址。可稍后重试或检查是否被风控。",
+            )
+        })?;
 
     Ok(ResolvedDouyinLiveStream {
         source_url,
@@ -157,8 +152,13 @@ pub fn resolve_douyin_live_stream(raw_input: &str) -> AppResult<ResolvedDouyinLi
     })
 }
 
-pub fn resolve_douyin_media(raw_input: &str) -> AppResult<ResolvedDouyinMedia> {
-    let client = build_http_client()?;
+/// Resolve using a caller-provided client so the play-stream request can reuse
+/// cookies (e.g. `ttwid`) set by the share page — the play endpoint often 403s
+/// without them. Build the client with [`build_share_http_client`].
+pub fn resolve_douyin_media_with_client(
+    client: &Client,
+    raw_input: &str,
+) -> AppResult<ResolvedDouyinMedia> {
     let source_url = extract_douyin_url(raw_input)
         .or_else(|| {
             extract_video_id_from_text(raw_input)
@@ -171,23 +171,31 @@ pub fn resolve_douyin_media(raw_input: &str) -> AppResult<ResolvedDouyinMedia> {
             )
         })?;
 
-    let video_id = resolve_video_id(&client, &source_url)?;
+    let video_id = resolve_video_id(client, &source_url)?;
     let share_url = share_page_url(&video_id);
-    let html = fetch_share_page_html(&client, &share_url)?;
+    let html = fetch_share_page_html(client, &share_url)?;
     let router_data = extract_router_data_json(&html)?;
-    let (play_url_raw, title) = extract_play_addr_and_title(&router_data)?;
-    let play_url = rewrite_playwm_to_play(&play_url_raw);
+    let (play_url_candidates, title) = extract_play_addrs_and_title(&router_data)?;
 
-    if play_url.trim().is_empty() {
+    let mut play_urls: Vec<String> = Vec::new();
+    for candidate in play_url_candidates {
+        let rewritten = rewrite_playwm_to_play(&candidate);
+        let trimmed = rewritten.trim().to_string();
+        if !trimmed.is_empty() && !play_urls.contains(&trimmed) {
+            play_urls.push(trimmed);
+        }
+    }
+    let Some(play_url) = play_urls.first().cloned() else {
         return Err(AppError::message(
             "已解析分享页，但播放地址为空。请查看 logs/download.log。",
         ));
-    }
+    };
 
     Ok(ResolvedDouyinMedia {
         source_url,
         video_id,
         play_url,
+        play_urls,
         title,
     })
 }
@@ -196,10 +204,12 @@ pub fn rewrite_playwm_to_play(play_url: &str) -> String {
     play_url.replacen("playwm", "play", 1)
 }
 
-fn build_http_client() -> AppResult<Client> {
+/// Cookie-enabled client for the share-page + play-stream flow.
+pub fn build_share_http_client() -> AppResult<Client> {
     Client::builder()
         .timeout(Duration::from_secs(SHARE_PAGE_TIMEOUT_SECS))
         .redirect(reqwest::redirect::Policy::limited(10))
+        .cookie_store(true)
         .user_agent(DOUYIN_MOBILE_USER_AGENT)
         .build()
         .map_err(|error| AppError::message(format!("HTTP 客户端初始化失败: {error}")))
@@ -225,9 +235,7 @@ fn fetch_live_room_html(client: &Client, room_url: &str) -> AppResult<String> {
         .header(COOKIE, format!("__ac_nonce={ac_nonce}"))
         .send()
         .map_err(|error| {
-            AppError::message(format!(
-                "请求抖音直播页失败: {error}。地址: {room_url}"
-            ))
+            AppError::message(format!("请求抖音直播页失败: {error}。地址: {room_url}"))
         })?;
 
     let status = response.status();
@@ -237,9 +245,9 @@ fn fetch_live_room_html(client: &Client, room_url: &str) -> AppResult<String> {
         )));
     }
 
-    response.text().map_err(|error| {
-        AppError::message(format!("读取抖音直播页 HTML 失败: {error}"))
-    })
+    response
+        .text()
+        .map_err(|error| AppError::message(format!("读取抖音直播页 HTML 失败: {error}")))
 }
 
 fn extract_live_room_id(url: &str) -> Option<String> {
@@ -361,7 +369,11 @@ fn pick_quality_url(map_value: &Value) -> Option<(String, String)> {
         }
     }
     for (quality, value) in object {
-        if let Some(url) = value.as_str().map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(url) = value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             return Some((quality.clone(), url.to_string()));
         }
     }
@@ -376,11 +388,7 @@ fn force_https_url(url: &str) -> String {
     }
 }
 
-fn extract_balanced_delimited<'a>(
-    source: &'a str,
-    open: char,
-    close: char,
-) -> Option<&'a str> {
+fn extract_balanced_delimited(source: &str, open: char, close: char) -> Option<&str> {
     let open_byte = open as u8;
     let close_byte = close as u8;
     let bytes = source.as_bytes();
@@ -551,7 +559,7 @@ fn extract_balanced_json_object(source: &str) -> Option<&str> {
     None
 }
 
-fn extract_play_addr_and_title(router_data: &Value) -> AppResult<(String, Option<String>)> {
+fn extract_play_addrs_and_title(router_data: &Value) -> AppResult<(Vec<String>, Option<String>)> {
     let loader_data = router_data
         .get("loaderData")
         .and_then(Value::as_object)
@@ -575,15 +583,24 @@ fn extract_play_addr_and_title(router_data: &Value) -> AppResult<(String, Option
         .pointer("/videoInfoRes/item_list/0")
         .ok_or_else(|| AppError::message("分享页 JSON 缺少 videoInfoRes.item_list[0]。"))?;
 
-    let play_url = item
-        .pointer("/video/play_addr/url_list/0")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            AppError::message("分享页 JSON 缺少 video.play_addr.url_list[0] 播放地址。")
-        })?
-        .to_string();
+    let play_urls: Vec<String> = item
+        .pointer("/video/play_addr/url_list")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    if play_urls.is_empty() {
+        return Err(AppError::message(
+            "分享页 JSON 缺少 video.play_addr.url_list 播放地址。",
+        ));
+    }
 
     let title = item
         .get("desc")
@@ -592,7 +609,7 @@ fn extract_play_addr_and_title(router_data: &Value) -> AppResult<(String, Option
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
 
-    Ok((play_url, title))
+    Ok((play_urls, title))
 }
 
 pub fn extract_douyin_url(raw_input: &str) -> Option<String> {
@@ -737,7 +754,8 @@ mod tests {
                             "video": {
                                 "play_addr": {
                                     "url_list": [
-                                        "https://aweme.snssdk.com/aweme/v1/playwm/?video_id=v1"
+                                        "https://aweme.snssdk.com/aweme/v1/playwm/?video_id=v1",
+                                        "https://www.douyin.com/aweme/v1/playwm/?video_id=v1"
                                     ]
                                 }
                             }
@@ -746,10 +764,11 @@ mod tests {
                 }
             }
         });
-        let (play_url, title) = extract_play_addr_and_title(&router).expect("play");
-        assert!(play_url.contains("playwm"));
+        let (play_urls, title) = extract_play_addrs_and_title(&router).expect("play");
+        assert_eq!(play_urls.len(), 2);
+        assert!(play_urls[0].contains("playwm"));
         assert_eq!(title.as_deref(), Some("测试标题"));
-        assert!(rewrite_playwm_to_play(&play_url).contains("/play/"));
+        assert!(rewrite_playwm_to_play(&play_urls[0]).contains("/play/"));
     }
 
     #[test]

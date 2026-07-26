@@ -1,6 +1,6 @@
 [package]
 name = "video-tool"
-version = "0.2.5"
+version = "0.3.0"
 description = "Desktop video toolkit: download, live record, local transcribe, AI summary"
 authors = ["video-tool"]
 edition = "2021"
@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,7 +24,8 @@ dirs = "6"
 which = "7"
 zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
 fs2 = "0.4.3"
-reqwest = { version = "=0.12.15", default-features = false, features = ["json", "blocking", "socks", "rustls-tls"] }
+reqwest = { version = "=0.12.15", default-features = false, features = ["json", "blocking", "socks", "rustls-tls", "cookies"] }
 regex = "1.13.1"
 tauri-plugin-dialog = "2.7.2"
+tauri-plugin-notification = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
