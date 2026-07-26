@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 18
+- **Total Sessions**: 19
 - **Last Active**: 2026-07-26
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~599 | Active |
+| `journal-1.md` | ~632 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 19 | 2026-07-26 | v0.3.0 发版 | `a9b757a` | `main` |
 | 18 | 2026-07-26 | v0.3 容量治理/转写校对/媒体预览实现 | uncommitted | `main` |
 | 17 | 2026-07-26 | v0.3 任务完成系统通知实现 | uncommitted | `main` |
 | 16 | 2026-07-24 | Media save mode video/audio and release v0.2.4 | `6789522` | `main` |

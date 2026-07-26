@@ -597,3 +597,36 @@ Implemented all remaining v0.3 subtasks: workspace capacity governance (get_work
 ### Next Steps
 
 - None - task complete
+
+
+## Session 19: v0.3.0 发版
+
+**Date**: 2026-07-26
+**Task**: v0.3.0 发版
+**Branch**: `main`
+
+### Summary
+
+Released v0.3.0: bumped version in package.json/Cargo.toml/tauri.conf.json, updated README changelog and PRODUCT_SPEC header + decision 25 (Douyin download fallback chain), committed, tagged v0.3.0, built NSIS+MSI via pnpm tauri:build, pushed main+tag, created GitHub release with both installers.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a9b757a` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
