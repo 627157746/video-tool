@@ -531,3 +531,36 @@ Implemented exclusive media_save_mode for download/Douyin/live; fixed Douyin ffm
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: v0.3 任务完成系统通知实现
+
+**Date**: 2026-07-26
+**Task**: v0.3 任务完成系统通知实现
+**Branch**: `main`
+
+### Summary
+
+Added tauri-plugin-notification, notify_on_job_finish config toggle (Serde default true, export/import aware), terminal-state notification in runner with focus suppression and redaction-safe copy; settings UI checkbox; fixed pre-existing clippy/fmt issues in douyin.rs/record.rs; all Rust checks and frontend build pass.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `uncommitted` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
