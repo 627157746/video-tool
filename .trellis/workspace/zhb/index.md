@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 20
+- **Total Sessions**: 21
 - **Last Active**: 2026-07-27
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~665 | Active |
+| `journal-1.md` | ~698 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 21 | 2026-07-27 | v0.3.1 发版 | `38bb230` | `main` |
 | 20 | 2026-07-27 | 更新自动重启与任务媒体形态重配 + 发版准备 | `5167ea0` | `main` |
 | 19 | 2026-07-26 | v0.3.0 发版 | `a9b757a` | `main` |
 | 18 | 2026-07-26 | v0.3 容量治理/转写校对/媒体预览实现 | uncommitted | `main` |

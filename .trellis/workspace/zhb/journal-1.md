@@ -663,3 +663,36 @@ Released v0.3.0: bumped version in package.json/Cargo.toml/tauri.conf.json, upda
 ### Next Steps
 
 - None - task complete
+
+
+## Session 21: v0.3.1 发版
+
+**Date**: 2026-07-27
+**Task**: v0.3.1 发版
+**Branch**: `main`
+
+### Summary
+
+完成 trellis-check（fmt/test96/clippy/typecheck/build）、commit 功能、finish-work 归档、版本升至 0.3.1 并发布 GitHub Release（NSIS+MSI）。发布页 https://github.com/627157746/video-tool/releases/tag/v0.3.1
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `38bb230` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
