@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getWorkspaceUsage, purgeJobMedia } from "../api";
+import { confirmAction } from "../confirmAction";
 import type { WorkspaceUsageReport } from "../types";
 
 export function formatBytes(sizeInBytes: number): string {
@@ -57,13 +58,14 @@ export function CapacityPanel({
 
   const handlePurge = useCallback(
     async (jobId: string, jobTitle: string) => {
-      const confirmed = window.confirm(
-        `确定清理任务「${jobTitle}」的全部媒体文件吗？\n\n` +
-          "转写文本、总结与日志会保留，但媒体删除后不可恢复：\n" +
-          "· 下载任务可重跑「获取媒体」重新下载\n" +
-          "· 直播录制的媒体无法重新获得",
-      );
-      if (!confirmed) {
+      if (
+        !confirmAction(
+          `确定清理任务「${jobTitle}」的全部媒体文件吗？\n\n` +
+            "转写文本、总结与日志会保留，但媒体删除后不可恢复：\n" +
+            "· 下载任务可重跑「获取媒体」重新下载\n" +
+            "· 直播录制的媒体无法重新获得",
+        )
+      ) {
         return;
       }
       setPurgingJobId(jobId);

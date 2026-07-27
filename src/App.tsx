@@ -100,6 +100,7 @@ import {
   type RecoveryAction,
   type RecoverySuggestion,
 } from "./recoveryUtils";
+import { confirmAction } from "./confirmAction";
 import {
   formatProgress,
   formatQueueStatusLabel,
@@ -583,12 +584,30 @@ function App() {
           requestVersion === detailRequestVersionRef.current &&
           selectedJobIdRef.current === jobId
         ) {
-          setSelectedJob(null);
-          selectedJobRef.current = null;
-          setLogText("");
-          setTranscriptText("");
-          setSummaryText("");
-          setErrorMessage(error instanceof Error ? error.message : String(error));
+          const message =
+            error instanceof Error ? error.message : String(error);
+          const isMissingJobError = message.includes("任务不存在");
+          const liveSnapshot = selectedJobRef.current;
+          const hasLiveRunningSnapshot =
+            liveSnapshot?.id === jobId &&
+            (liveSnapshot.status === "running" ||
+              liveSnapshot.status === "queued");
+          // Background poll/event refresh can race atomic source.json writes
+          // during download progress. Keep the last good snapshot instead of
+          // blanking the detail pane with a false "任务不存在" toast.
+          if (!resetDisplay && isMissingJobError && hasLiveRunningSnapshot) {
+            return;
+          }
+          if (resetDisplay || !hasLiveRunningSnapshot) {
+            setSelectedJob(null);
+            selectedJobRef.current = null;
+            setLogText("");
+            setTranscriptText("");
+            setSummaryText("");
+          }
+          if (resetDisplay || !isMissingJobError) {
+            setErrorMessage(message);
+          }
         }
       }
     },
@@ -733,10 +752,18 @@ function App() {
         return previous.map((entry) => (entry.id === job.id ? item : entry));
       });
       if (selectedJobIdRef.current === job.id) {
-        detailRequestVersionRef.current += 1;
+        const previousSelectedJob = selectedJobRef.current;
         selectedJobRef.current = job;
         setSelectedJob(job);
-        void reloadLog(job.id, logNameRef.current);
+        // Progress-only ticks already carry the full Job; avoid reloading logs
+        // (and bumping detail generations) on every percent update while running.
+        const stepChanged =
+          previousSelectedJob?.current_step !== job.current_step;
+        const statusChanged = previousSelectedJob?.status !== job.status;
+        if (job.status !== "running" || stepChanged || statusChanged) {
+          detailRequestVersionRef.current += 1;
+          void reloadLog(job.id, logNameRef.current);
+        }
         if (job.status !== "running") {
           void loadJobDetail(job.id, logNameRef.current, false);
         }
@@ -1543,10 +1570,11 @@ function App() {
       );
     if (hasExistingMediaProduct) {
       const modeLabel = nextMode === "audio" ? "保存音频" : "保存视频";
-      const confirmed = window.confirm(
-        `将改为「${modeLabel}」。\n\n已有媒体产物会被清除，下游转写/总结需在重新下载或录制后重跑。\n\n是否继续？`,
-      );
-      if (!confirmed) {
+      if (
+        !confirmAction(
+          `将改为「${modeLabel}」。\n\n已有媒体产物会被清除，下游转写/总结需在重新下载或录制后重跑。\n\n是否继续？`,
+        )
+      ) {
         return;
       }
     }
@@ -1644,10 +1672,11 @@ function App() {
   }
 
   async function handleDeleteJob(job: JobListItem) {
-    const confirmed = window.confirm(
-      `确定永久删除任务“${job.title}”吗？\n\n任务目录中的媒体、字幕、总结和日志都会被删除，且无法恢复。`,
-    );
-    if (!confirmed) {
+    if (
+      !confirmAction(
+        `确定永久删除任务“${job.title}”吗？\n\n任务目录中的媒体、字幕、总结和日志都会被删除，且无法恢复。`,
+      )
+    ) {
       return;
     }
 
@@ -1682,6 +1711,13 @@ function App() {
   }
 
   async function handleStopRecording(jobId: string) {
+    if (
+      !confirmAction(
+        "确定停止当前直播录制吗？\n\n将结束抓流并合并已有分段；已录内容会保留，但无法继续追加同一场录制。",
+      )
+    ) {
+      return;
+    }
     setStoppingRecordingJobIds((currentJobIds) => {
       const nextJobIds = new Set(currentJobIds);
       nextJobIds.add(jobId);
@@ -1702,6 +1738,13 @@ function App() {
   }
 
   async function handleExport(jobId: string) {
+    if (
+      !confirmAction(
+        "确定导出该任务包吗？\n\n将打包任务目录中的媒体、转写、总结与日志（体积可能较大）。",
+      )
+    ) {
+      return;
+    }
     setIsBusy(true);
     try {
       const path = await exportJob(jobId);
@@ -1718,13 +1761,13 @@ function App() {
     if (job.status === "running" || segmentSelectionInFlightRef.current) {
       return;
     }
-    if (job.transcript_edited_at) {
-      const confirmed = window.confirm(
+    if (
+      job.transcript_edited_at &&
+      !confirmAction(
         "该任务的转写文本已手工校对；修改选段会重建合并文字并覆盖校对结果。确定继续吗？",
-      );
-      if (!confirmed) {
-        return;
-      }
+      )
+    ) {
+      return;
     }
     const selectedIds = job.selected_segment_ids.includes(segmentId)
       ? job.selected_segment_ids.filter((id) => id !== segmentId)
@@ -1751,13 +1794,20 @@ function App() {
   async function handleRetrySegment(jobId: string, segmentId: string) {
     const currentJob =
       selectedJobRef.current?.id === jobId ? selectedJobRef.current : null;
-    if (currentJob?.transcript_edited_at) {
-      const confirmed = window.confirm(
+    if (
+      currentJob?.transcript_edited_at &&
+      !confirmAction(
         "该任务的转写文本已手工校对；重试分段会重建合并文字并覆盖校对结果。确定继续吗？",
-      );
-      if (!confirmed) {
-        return;
-      }
+      )
+    ) {
+      return;
+    }
+    if (
+      !confirmAction(
+        `确定重试转写分段「${segmentId}」吗？\n\n该分段会重新转写；成功后需重跑合并字幕才能更新全文。`,
+      )
+    ) {
+      return;
     }
     setIsBusy(true);
     try {
@@ -1801,13 +1851,55 @@ function App() {
       step === "ingest" ||
       step === "transcribe" ||
       step === "merge_transcript";
-    if (currentJob?.transcript_edited_at && stepRegeneratesMergedTranscript) {
-      const confirmed = window.confirm(
+    if (
+      currentJob?.transcript_edited_at &&
+      stepRegeneratesMergedTranscript &&
+      !confirmAction(
         "该任务的转写文本已手工校对；重跑该步骤会重新生成合并文字并覆盖校对结果。确定继续吗？",
-      );
-      if (!confirmed) {
-        return;
-      }
+      )
+    ) {
+      return;
+    }
+    const isFullOrIngest = step == null || step === "ingest";
+    const hasExistingMediaProduct =
+      currentJob != null &&
+      ((currentJob.media_files?.length ?? 0) > 0 ||
+        (currentJob.media_segments?.length ?? 0) > 0 ||
+        currentJob.step_statuses.some(
+          (stepProgress) =>
+            stepProgress.step === "ingest" &&
+            (stepProgress.status === "succeeded" ||
+              stepProgress.status === "failed" ||
+              stepProgress.status === "skipped"),
+        ));
+    if (
+      isFullOrIngest &&
+      hasExistingMediaProduct &&
+      !confirmAction(
+        step == null
+          ? "确定重新运行整条流水线吗？\n\n将重新获取媒体，并可能覆盖已有转写/总结产物。"
+          : "确定重新执行「获取媒体」吗？\n\n已有媒体可能被覆盖，下游转写/总结通常需要重跑。",
+      )
+    ) {
+      return;
+    }
+    if (
+      step === "transcribe" &&
+      !confirmAction(
+        "确定重新执行转写吗？\n\n现有转写分段可能被覆盖，合并字幕与总结通常需要重跑。",
+      )
+    ) {
+      return;
+    }
+    if (
+      (step === "summarize" || step === "chapterize") &&
+      !confirmAction(
+        step === "summarize"
+          ? "确定重新生成 AI 总结吗？\n\n现有总结文档将被覆盖。"
+          : "确定重新生成章节吗？\n\n现有章节产物将被覆盖。",
+      )
+    ) {
+      return;
     }
     setIsBusy(true);
     setErrorMessage(null);
@@ -1887,11 +1979,23 @@ function App() {
   }
 
   async function handleSaveSettings() {
+    const previousWorkspace = config?.workspace_dir?.trim() ?? "";
+    const nextWorkspace = settingsWorkspace.trim();
+    if (
+      previousWorkspace &&
+      nextWorkspace &&
+      previousWorkspace.replace(/\\/g, "/") !==
+        nextWorkspace.replace(/\\/g, "/") &&
+      !confirmAction(
+        `确定切换工作区吗？\n\n从：\n${previousWorkspace}\n\n到：\n${nextWorkspace}\n\n任务列表将切换到新工作区；正在运行的任务会阻止保存。`,
+      )
+    ) {
+      return;
+    }
     refreshRequestVersionRef.current += 1;
     setIsBusy(true);
     setErrorMessage(null);
     try {
-      const previousWorkspace = config?.workspace_dir;
       const normalizedProviderDrafts = providerDrafts.map((provider) => {
         const normalizedModels = normalizeProviderModels(
           provider.models,
@@ -2082,6 +2186,13 @@ function App() {
   }
 
   async function handleImportAppConfigFromClipboard() {
+    if (
+      !confirmAction(
+        "确定从剪贴板导入配置吗？\n\n将覆盖当前 Provider / 模板等设置（默认不导入密钥）。此操作不可自动撤销。",
+      )
+    ) {
+      return;
+    }
     setIsLoadingP4Tools(true);
     setErrorMessage(null);
     try {
@@ -2130,10 +2241,11 @@ function App() {
       updateCheckResult?.latest_version?.trim() || "新版本";
     const installerName =
       updateCheckResult?.installer_name?.trim() || "安装包";
-    const confirmed = window.confirm(
-      `将下载 ${installerName}（目标版本 ${latestVersion}）并直接静默安装（无安装向导）。\n\n安装完成后应用会自动退出并重新启动。\n\n是否继续？`,
-    );
-    if (!confirmed) {
+    if (
+      !confirmAction(
+        `将下载 ${installerName}（目标版本 ${latestVersion}）并直接静默安装（无安装向导）。\n\n安装完成后应用会自动退出，并在安装结束后重新启动。\n\n是否继续？`,
+      )
+    ) {
       return;
     }
     setIsInstallingUpdate(true);
@@ -2198,6 +2310,13 @@ function App() {
   }
 
   async function handleRepairWorkspaceHealth() {
+    if (
+      !confirmAction(
+        "确定修复工作区健康问题吗？\n\n会把残留的 running/queued 状态恢复为失败或待执行，并尝试重建空的媒体索引。不会删除任务目录。",
+      )
+    ) {
+      return;
+    }
     setIsRepairingHealth(true);
     setErrorMessage(null);
     try {
@@ -2658,6 +2777,13 @@ function App() {
   }
 
   async function handleRebuildSearchIndex() {
+    if (
+      !confirmAction(
+        "确定重建全文搜索索引吗？\n\n将清空并重新扫描工作区内全部任务的转写与总结，大工作区可能需要一些时间。",
+      )
+    ) {
+      return;
+    }
     setIsBusy(true);
     setErrorMessage(null);
     try {

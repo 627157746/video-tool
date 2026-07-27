@@ -101,10 +101,17 @@ export function MediaPreviewPanel({
       });
     } catch (error) {
       if (loadRequestVersionRef.current === requestVersion) {
-        onError(error instanceof Error ? error.message : String(error));
+        const message =
+          error instanceof Error ? error.message : String(error);
+        // Running downloads rewrite source.json frequently; a single transient
+        // miss should not surface as a hard "任务不存在" banner.
+        if (message.includes("任务不存在") && isJobBusy) {
+          return;
+        }
+        onError(message);
       }
     }
-  }, [jobId, onError]);
+  }, [isJobBusy, jobId, onError]);
 
   useEffect(() => {
     void loadOverview();

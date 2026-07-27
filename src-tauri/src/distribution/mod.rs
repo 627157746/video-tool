@@ -1033,8 +1033,16 @@ fn sanitize_installer_file_name(name: &str) -> String {
 /// - NSIS setup.exe: `/S` (silent)
 /// - MSI: `msiexec /i … /qn /norestart` (quiet, no OS reboot prompt)
 ///
-/// The current process must exit shortly after this returns so installer can
-/// replace in-use binaries.
+/// Implementation notes (Windows):
+/// - A previous one-liner `cmd /C "ping & install & start"` with
+///   `DETACHED_PROCESS` often died with the parent process tree, so the app
+///   never relaunched and users had to start it manually.
+/// - We now write a self-contained `.cmd` helper and launch it via
+///   `cmd /C start …`, which breaks the process tree, then wait for **this**
+///   PID to exit before installing and relaunching.
+///
+/// The current process must exit shortly after this returns so the installer
+/// can replace in-use binaries.
 fn schedule_silent_install_and_restart(
     installer_path: &Path,
     app_executable: &Path,
@@ -1042,18 +1050,10 @@ fn schedule_silent_install_and_restart(
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW | DETACHED_PROCESS — keep helper alive after parent exits.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
 
-        let installer = installer_path
-            .to_string_lossy()
-            .replace('"', "")
-            .replace('%', "%%");
-        let app_exe = app_executable
-            .to_string_lossy()
-            .replace('"', "")
-            .replace('%', "%%");
+        let installer = sanitize_path_for_batch(installer_path);
+        let app_exe = sanitize_path_for_batch(app_executable);
         if installer.trim().is_empty() || app_exe.trim().is_empty() {
             return Err(AppError::message(
                 "安装包或程序路径无效，无法调度自动重启安装。".to_string(),
@@ -1065,22 +1065,34 @@ fn schedule_silent_install_and_restart(
             .and_then(|value| value.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        // Wait a few seconds so this process can exit and release file locks,
-        // then wait for installer completion before relaunching.
-        let install_step = if extension == "msi" {
-            format!("msiexec /i \"{installer}\" /qn /norestart")
-        } else {
-            // Tauri NSIS installer supports /S for fully silent install.
-            format!("start /wait \"\" \"{installer}\" /S")
-        };
-        let script =
-            format!("ping 127.0.0.1 -n 4 >nul & {install_step} & start \"\" \"{app_exe}\"");
+        let install_kind = if extension == "msi" { "msi" } else { "nsis" };
+        let process_id = std::process::id();
+        let helper_script =
+            build_windows_update_helper_script(process_id, &installer, &app_exe, install_kind);
 
-        std::process::Command::new("cmd")
-            .args(["/C", &script])
-            .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+        let helper_directory = std::env::temp_dir().join("video-tool-updates");
+        fs::create_dir_all(&helper_directory)
+            .map_err(|error| AppError::message(format!("创建更新辅助脚本目录失败: {error}")))?;
+        let helper_path = helper_directory.join(format!(
+            "update-restart-{process_id}-{}.cmd",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::write(&helper_path, helper_script.as_bytes())
+            .map_err(|error| AppError::message(format!("写入更新辅助脚本失败: {error}")))?;
+
+        // `start "title" /MIN "script.cmd"` creates an independent process that
+        // survives this app's exit. Empty title must not be used — `start`
+        // treats the first quoted token as the window title.
+        let helper_path_for_start = sanitize_path_for_batch(&helper_path);
+        let start_command = format!("start \"video-tool-update\" /MIN \"{helper_path_for_start}\"");
+        std::process::Command::new("cmd.exe")
+            .args(["/C", &start_command])
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn()
-            .map_err(|error| AppError::message(format!("调度静默安装与自动重启失败: {error}")))?;
+            .map_err(|error| {
+                let _ = fs::remove_file(&helper_path);
+                AppError::message(format!("调度静默安装与自动重启失败: {error}"))
+            })?;
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
@@ -1091,6 +1103,59 @@ fn schedule_silent_install_and_restart(
             "当前平台尚未支持应用内静默安装，请打开发布页手动安装。".to_string(),
         ))
     }
+}
+
+/// Strip characters that break cmd.exe batch quoting or expansion.
+fn sanitize_path_for_batch(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace(['"', '%', '&', '|', '<', '>', '^'], "")
+}
+
+/// Build the Windows helper `.cmd` that waits for `process_id`, installs, then
+/// relaunches. Kept pure for unit tests.
+fn build_windows_update_helper_script(
+    process_id: u32,
+    installer_path: &str,
+    app_executable: &str,
+    install_kind: &str,
+) -> String {
+    // Keep the script ASCII-heavy and self-contained. Paths are already sanitized.
+    format!(
+        r#"@echo off
+setlocal EnableExtensions
+set "TARGET_PID={process_id}"
+set "INSTALLER={installer_path}"
+set "APP_EXE={app_executable}"
+set "INSTALL_KIND={install_kind}"
+set "WAIT_COUNT=0"
+
+:wait_loop
+if %WAIT_COUNT% GEQ 180 goto force_install
+tasklist /FI "PID eq %TARGET_PID%" 2>nul | find "%TARGET_PID%" >nul
+if errorlevel 1 goto app_exited
+set /A WAIT_COUNT+=1
+timeout /t 1 /nobreak >nul
+goto wait_loop
+
+:app_exited
+timeout /t 2 /nobreak >nul
+
+:force_install
+if /I "%INSTALL_KIND%"=="msi" (
+  msiexec /i "%INSTALLER%" /qn /norestart
+) else (
+  "%INSTALLER%" /S
+)
+
+timeout /t 1 /nobreak >nul
+if exist "%APP_EXE%" (
+  start "" "%APP_EXE%"
+)
+
+del "%~f0" >nul 2>&1
+endlocal
+"#
+    )
 }
 
 /// GET release JSON. Ok(Ok(body)) on success, Ok(Err(status)) on non-success HTTP, Err on transport/parse.
@@ -1344,6 +1409,33 @@ mod tests {
             "_evil_video-tool.msi"
         );
         assert_eq!(sanitize_installer_file_name(""), "video-tool-setup.bin");
+    }
+
+    #[test]
+    fn windows_update_helper_script_waits_for_pid_and_relaunches() {
+        let script = build_windows_update_helper_script(
+            4242,
+            r"C:\Temp\video-tool-setup.exe",
+            r"C:\Program Files\video-tool\video-tool.exe",
+            "nsis",
+        );
+        assert!(script.contains("TARGET_PID=4242"));
+        assert!(script.contains(r"C:\Temp\video-tool-setup.exe"));
+        assert!(script.contains(r"C:\Program Files\video-tool\video-tool.exe"));
+        assert!(script.contains(r#""%INSTALLER%" /S"#));
+        assert!(script.contains(r#"start "" "%APP_EXE%""#));
+        assert!(script.contains(r#"tasklist /FI "PID eq %TARGET_PID%""#));
+    }
+
+    #[test]
+    fn windows_update_helper_script_uses_msiexec_for_msi() {
+        let script = build_windows_update_helper_script(
+            7,
+            r"C:\Temp\setup.msi",
+            r"C:\Apps\video-tool.exe",
+            "msi",
+        );
+        assert!(script.contains(r#"msiexec /i "%INSTALLER%" /qn /norestart"#));
     }
 
     #[test]

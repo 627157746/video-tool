@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getTranscriptCues, saveTranscriptEdit } from "../api";
+import { confirmAction } from "../confirmAction";
 import type { Job, TranscriptCueDocument } from "../types";
 
 function formatCueTimestamp(milliseconds: number): string {
@@ -83,6 +84,13 @@ export function TranscriptProofreadPanel({
 
   const handleSave = useCallback(async () => {
     if (cueDocument == null || !hasChanges) {
+      return;
+    }
+    if (
+      !confirmAction(
+        "确定保存校对结果吗？\n\n保存后章节与总结会失效，需要重新运行对应步骤才能更新。",
+      )
+    ) {
       return;
     }
     setIsSaving(true);

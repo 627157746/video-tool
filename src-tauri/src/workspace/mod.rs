@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,13 +100,55 @@ pub fn list_jobs(workspace_root: impl AsRef<Path>) -> AppResult<Vec<Job>> {
 }
 
 pub fn load_job(workspace_root: impl AsRef<Path>, job_id: &str) -> AppResult<Job> {
+    // Brief retries cover two real-world races:
+    // 1) create → immediate spawn/UI get_job before the directory entry is visible
+    // 2) concurrent atomic replace of source.json while a reader checks exists()
+    const MAX_ATTEMPTS: u32 = 4;
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        match load_job_once(workspace_root.as_ref(), job_id) {
+            Ok(job) => return Ok(job),
+            Err(error) if is_transient_missing_job_error(&error) && attempt < MAX_ATTEMPTS => {
+                thread::sleep(Duration::from_millis(15 * u64::from(attempt)));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn load_job_once(workspace_root: &Path, job_id: &str) -> AppResult<Job> {
     let job_dir = validated_job_dir(workspace_root, job_id)?;
     let source_path = job_dir.join("source.json");
     if !source_path.exists() {
         return Err(AppError::message(format!("任务不存在: {job_id}")));
     }
-    let raw = fs::read_to_string(source_path)?;
+    let raw = fs::read_to_string(&source_path)?;
     Ok(serde_json::from_str(&raw)?)
+}
+
+fn is_transient_missing_job_error(error: &AppError) -> bool {
+    let message = error.to_string();
+    message.contains("任务不存在")
+        || matches!(
+            error,
+            AppError::Io(io_error) if io_error.kind() == std::io::ErrorKind::NotFound
+        )
+}
+
+/// Patch only `progress` (+ `updated_at`) on disk. Used by download/live progress
+/// callbacks so high-frequency ticks do not reindex search or thrash full writes
+/// beyond a simple atomic replace of `source.json`.
+pub fn update_job_progress(
+    workspace_root: impl AsRef<Path>,
+    job_id: &str,
+    progress: f32,
+) -> AppResult<Job> {
+    let mut job = load_job(workspace_root.as_ref(), job_id)?;
+    job.progress = progress.clamp(0.0, 100.0);
+    job.updated_at = chrono::Utc::now();
+    save_job(workspace_root.as_ref(), &job)?;
+    Ok(job)
 }
 
 pub fn save_job(workspace_root: impl AsRef<Path>, job: &Job) -> AppResult<()> {
@@ -494,6 +538,37 @@ mod tests {
         let error = validated_job_dir(&workspace_root, "../outside")
             .expect_err("path traversal must be rejected");
         assert!(error.to_string().contains("任务 ID 无效"));
+    }
+
+    #[test]
+    fn update_job_progress_patches_only_progress_field() {
+        let workspace_root = temporary_workspace("progress-patch");
+        let mut job = Job::new(
+            JobSource {
+                kind: JobKind::Download,
+                url: Some("https://example.com/video".to_string()),
+                title: Some("progress test".to_string()),
+                local_path: None,
+                segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
+            },
+            PipelineOptions::default(),
+        );
+        job.media_files = vec!["original.mp4".to_string()];
+        create_job_directories(&workspace_root, &job).expect("create job");
+
+        let updated = update_job_progress(&workspace_root, &job.id, 42.5).expect("update progress");
+        assert!((updated.progress - 42.5).abs() < f32::EPSILON);
+        assert_eq!(updated.media_files, vec!["original.mp4".to_string()]);
+
+        let reloaded = load_job(&workspace_root, &job.id).expect("reload job");
+        assert!((reloaded.progress - 42.5).abs() < f32::EPSILON);
+        assert_eq!(reloaded.media_files, vec!["original.mp4".to_string()]);
+
+        fs::remove_dir_all(workspace_root).expect("remove test workspace");
     }
 
     #[test]

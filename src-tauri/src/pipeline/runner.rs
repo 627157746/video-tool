@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
@@ -241,6 +242,42 @@ impl RunnerState {
             queue.push_front(entry);
         }
         selected
+    }
+}
+
+/// Limits how often download progress is written to `source.json`.
+/// Always publishes 0% / 100% and any jump of at least 1 percentage point,
+/// otherwise at most about twice per second.
+#[derive(Debug)]
+struct ProgressThrottle {
+    last_published_percent: f32,
+    last_published_at: Option<Instant>,
+}
+
+impl Default for ProgressThrottle {
+    fn default() -> Self {
+        Self {
+            last_published_percent: -1.0,
+            last_published_at: None,
+        }
+    }
+}
+
+impl ProgressThrottle {
+    fn should_publish(&mut self, percent: f32) -> bool {
+        let now = Instant::now();
+        let percent_delta = (percent - self.last_published_percent).abs();
+        let is_boundary = percent <= 0.05 || percent >= 99.5;
+        let interval_elapsed = self
+            .last_published_at
+            .is_none_or(|previous| now.duration_since(previous) >= Duration::from_millis(500));
+        if is_boundary || percent_delta >= 1.0 || interval_elapsed {
+            self.last_published_percent = percent;
+            self.last_published_at = Some(now);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -689,11 +726,28 @@ fn run_ingest(
             let progress_job_id = job.id.clone();
             let progress_workspace = workspace_root.to_path_buf();
             let progress_app = app.clone();
+            // Throttle disk writes: yt-dlp can emit many progress lines per second.
+            // Full persist()+search reindex on every tick races UI get_job readers
+            // and can surface false "任务不存在" toasts during download.
+            let progress_throttle = Arc::new(Mutex::new(ProgressThrottle::default()));
             let callback = Arc::new(Mutex::new(move |percent: f32| {
-                if let Ok(mut current) = workspace::load_job(&progress_workspace, &progress_job_id)
+                let clamped = percent.clamp(0.0, 100.0);
                 {
-                    current.progress = percent.clamp(0.0, 100.0);
-                    let _ = persist(&progress_app, &progress_workspace, &mut current);
+                    let Ok(mut throttle) = progress_throttle.lock() else {
+                        return;
+                    };
+                    if !throttle.should_publish(clamped) {
+                        return;
+                    }
+                }
+                match workspace::update_job_progress(&progress_workspace, &progress_job_id, clamped)
+                {
+                    Ok(updated_job) => {
+                        let _ = emit_job_updated(&progress_app, &updated_job);
+                    }
+                    Err(error) => {
+                        eprintln!("progress update skipped for {progress_job_id}: {error}");
+                    }
                 }
             }));
             let cookies = download::DownloadCookiesOptions::resolve(&job.source, config)?;
@@ -843,6 +897,30 @@ fn persist(app: &AppHandle, workspace_root: &Path, job: &mut Job) -> AppResult<(
 fn emit_job_updated(app: &AppHandle, job: &Job) -> AppResult<()> {
     app.emit("job-updated", job)
         .map_err(|error| AppError::message(format!("emit job-updated failed: {error}")))
+}
+
+#[cfg(test)]
+mod progress_throttle_tests {
+    use super::ProgressThrottle;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn publishes_first_sample_and_large_jumps() {
+        let mut throttle = ProgressThrottle::default();
+        assert!(throttle.should_publish(1.0));
+        assert!(!throttle.should_publish(1.2));
+        assert!(throttle.should_publish(3.0));
+        assert!(throttle.should_publish(100.0));
+    }
+
+    #[test]
+    fn publishes_after_interval_even_for_small_delta() {
+        let mut throttle = ProgressThrottle::default();
+        assert!(throttle.should_publish(10.0));
+        thread::sleep(Duration::from_millis(520));
+        assert!(throttle.should_publish(10.2));
+    }
 }
 
 fn main_window_is_focused(app: &AppHandle) -> bool {

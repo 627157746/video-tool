@@ -10,6 +10,9 @@ $RECYCLE.BIN/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json.example
+# Cursor MCP configs often hold API keys / tokens — never commit.
+.cursor/mcp.json
+.cursor/mcp*.json
 *.suo
 *.ntvs*
 *.njsproj

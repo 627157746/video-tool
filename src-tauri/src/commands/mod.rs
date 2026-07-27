@@ -1304,7 +1304,9 @@ pub fn install_app_update(
     if result.will_restart {
         let app_handle = app.clone();
         std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(900));
+            // Give the detached update helper time to start and begin polling
+            // this PID before we tear down the process tree.
+            std::thread::sleep(std::time::Duration::from_millis(1_500));
             app_handle.exit(0);
         });
     }
