@@ -630,3 +630,36 @@ Released v0.3.0: bumped version in package.json/Cargo.toml/tauri.conf.json, upda
 ### Next Steps
 
 - None - task complete
+
+
+## Session 20: 更新自动重启与任务媒体形态重配 + 发版准备
+
+**Date**: 2026-07-27
+**Task**: 更新自动重启与任务媒体形态重配 + 发版准备
+**Branch**: `main`
+
+### Summary
+
+实现：1) 应用内静默安装后调度退出→安装→自动重启；2) 已有下载/直播任务可在详情重配保存视频/音频（清 media + 失效下游）。质量检查：fmt/test(96)/clippy/typecheck/build 通过。已提交 5167ea0 并归档 07-27-update-restart-media-reconfig。下一步发布 0.3.1。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5167ea0` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
