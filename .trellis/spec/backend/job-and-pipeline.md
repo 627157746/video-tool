@@ -45,6 +45,17 @@ Audio-mode ingest must not “download full video to `media/`, then convert”:
 Transcribe’s temporary 16 kHz WAV extract is an internal pipeline step, not the
 user-facing “save audio” product.
 
+Existing download / live jobs may reconfigure `media_save_mode` via
+`update_job_media_save_mode` (not while running). When the mode changes after
+ingest has produced media (or ingest has already run), the command must:
+
+1. Clear `media/` on disk (`paths::clear_media_artifacts`)
+2. Set Ingest to `pending` with a 简体中文 detail
+3. `invalidate_after_step(Ingest)` and remove downstream transcript/summary artifacts
+4. Emit `job-updated`
+
+Do not auto-rerun the pipeline; the user re-runs download/record manually.
+
 Some existing variants such as `Cancelled` and `Skipped` have limited or no
 production paths. Do not invent behavior from the enum name; trace actual
 transitions before using one, and complete the transition contract if new code

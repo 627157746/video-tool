@@ -6,5 +6,6 @@ pub use job::{
     JobListItem, JobLogRequest, JobSource, JobStatus, JobStep, MediaSaveMode, PipelineOptions,
     RetryTranscriptSegmentRequest, RunJobRequest, SaveConfigRequest, SegmentStatus,
     SelectSegmentsRequest, StepStatus, TestProviderRequest, TranscriptSegmentInfo,
-    UpdateJobGroupRequest, UpdateJobPipelineRequest, UpdateJobTitleRequest,
+    UpdateJobGroupRequest, UpdateJobMediaSaveModeRequest, UpdateJobPipelineRequest,
+    UpdateJobTitleRequest,
 };

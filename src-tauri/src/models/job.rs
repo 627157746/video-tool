@@ -425,6 +425,15 @@ pub struct UpdateJobGroupRequest {
     pub group: Option<String>,
 }
 
+/// Reconfigure exclusive media product mode on an existing download / live Job.
+/// When the mode changes after ingest has produced media, callers invalidate
+/// ingest and clear `media/` so a re-run uses the new mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateJobMediaSaveModeRequest {
+    pub job_id: String,
+    pub media_save_mode: MediaSaveMode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportJobRequest {
     pub job_id: String,
@@ -1204,5 +1213,66 @@ mod tests {
             with_default.effective_template_ids(Some("a"), &available),
             vec!["a".to_string()]
         );
+    }
+
+    #[test]
+    fn media_save_mode_defaults_to_video_and_invalidates_downstream_on_ingest() {
+        let mut job = Job::new(
+            JobSource {
+                kind: JobKind::Download,
+                url: Some("https://example.com/v".into()),
+                title: None,
+                local_path: None,
+                segment_minutes: None,
+                download_cookies_mode: None,
+                download_cookies_file: None,
+                download_cookies_from_browser: None,
+                media_save_mode: MediaSaveMode::default(),
+            },
+            PipelineOptions {
+                auto_transcribe: true,
+                auto_summarize: true,
+                auto_chapterize: false,
+                provider_profile_id: None,
+                template_id: None,
+                template_ids: Vec::new(),
+                model: None,
+                transcribe_language: None,
+            },
+        );
+        assert_eq!(job.source.media_save_mode, MediaSaveMode::Video);
+        for progress in &mut job.step_statuses {
+            progress.status = StepStatus::Succeeded;
+        }
+        job.media_files = vec!["original.mp4".into()];
+        job.plain_transcript_path = Some("transcript/plain.txt".into());
+
+        job.source.media_save_mode = MediaSaveMode::Audio;
+        job.set_step_status(
+            &JobStep::Ingest,
+            StepStatus::Pending,
+            Some("保存形态已更改，需重新下载/录制".into()),
+        );
+        job.invalidate_after_step(&JobStep::Ingest);
+
+        assert!(job.media_files.is_empty());
+        assert!(job.plain_transcript_path.is_none());
+        assert_eq!(
+            job.step_statuses
+                .iter()
+                .find(|progress| progress.step == JobStep::Ingest)
+                .expect("ingest")
+                .status,
+            StepStatus::Pending
+        );
+        assert_eq!(
+            job.step_statuses
+                .iter()
+                .find(|progress| progress.step == JobStep::Transcribe)
+                .expect("transcribe")
+                .status,
+            StepStatus::Pending
+        );
+        assert_eq!(job.derived_status(), JobStatus::Pending);
     }
 }

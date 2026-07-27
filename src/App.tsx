@@ -42,6 +42,7 @@ import {
   stopRecording,
   testProvider,
   updateJobGroup,
+  updateJobMediaSaveMode,
   updateJobPipeline,
   updateJobTitle,
 } from "./api";
@@ -231,6 +232,8 @@ function App() {
   /** Selected group id (or legacy free-text value); empty string means ungrouped. */
   const [jobGroupDraft, setJobGroupDraft] = useState("");
   const [isSavingJobGroup, setIsSavingJobGroup] = useState(false);
+  const [isSavingJobMediaSaveMode, setIsSavingJobMediaSaveMode] =
+    useState(false);
 
   const [settingsWorkspace, setSettingsWorkspace] = useState("");
   const [settingsSegmentMinutes, setSettingsSegmentMinutes] = useState(30);
@@ -1510,6 +1513,71 @@ function App() {
     }
   }
 
+  async function handleJobMediaSaveModeChange(nextMode: MediaSaveMode) {
+    if (!selectedJob || isSavingJobMediaSaveMode) {
+      return;
+    }
+    if (
+      selectedJob.source.kind !== "download" &&
+      selectedJob.source.kind !== "live_record"
+    ) {
+      return;
+    }
+    if (selectedJob.status === "running") {
+      return;
+    }
+    const currentMode = selectedJob.source.media_save_mode ?? "video";
+    if (currentMode === nextMode) {
+      return;
+    }
+
+    const hasExistingMediaProduct =
+      (selectedJob.media_files?.length ?? 0) > 0 ||
+      (selectedJob.media_segments?.length ?? 0) > 0 ||
+      selectedJob.step_statuses.some(
+        (stepProgress) =>
+          stepProgress.step === "ingest" &&
+          (stepProgress.status === "succeeded" ||
+            stepProgress.status === "failed" ||
+            stepProgress.status === "skipped"),
+      );
+    if (hasExistingMediaProduct) {
+      const modeLabel = nextMode === "audio" ? "保存音频" : "保存视频";
+      const confirmed = window.confirm(
+        `将改为「${modeLabel}」。\n\n已有媒体产物会被清除，下游转写/总结需在重新下载或录制后重跑。\n\n是否继续？`,
+      );
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setIsSavingJobMediaSaveMode(true);
+    setErrorMessage(null);
+    try {
+      const updatedJob = await updateJobMediaSaveMode({
+        job_id: selectedJob.id,
+        media_save_mode: nextMode,
+      });
+      selectedJobRef.current = updatedJob;
+      setSelectedJob(updatedJob);
+      setJobs((previousJobs) =>
+        previousJobs.map((entry) =>
+          entry.id === updatedJob.id ? jobToListItem(updatedJob) : entry,
+        ),
+      );
+      const savedMode = updatedJob.source.media_save_mode ?? "video";
+      setStatusMessage(
+        savedMode === "audio"
+          ? "已改为保存音频；如需新产物请重新运行下载/录制"
+          : "已改为保存视频；如需新产物请重新运行下载/录制",
+      );
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSavingJobMediaSaveMode(false);
+    }
+  }
+
   async function handleJobGroupSelectChange(nextSelectValue: string) {
     if (!selectedJob || isSavingJobGroup) {
       return;
@@ -2063,7 +2131,7 @@ function App() {
     const installerName =
       updateCheckResult?.installer_name?.trim() || "安装包";
     const confirmed = window.confirm(
-      `将下载 ${installerName}（目标版本 ${latestVersion}）并直接静默安装（无安装向导）。\n\n安装在后台进行；完成后请关闭本应用再重新打开。\n\n是否继续？`,
+      `将下载 ${installerName}（目标版本 ${latestVersion}）并直接静默安装（无安装向导）。\n\n安装完成后应用会自动退出并重新启动。\n\n是否继续？`,
     );
     if (!confirmed) {
       return;
@@ -2085,11 +2153,17 @@ function App() {
         downloaded_bytes: updateCheckResult?.installer_size_bytes ?? 0,
         total_bytes: updateCheckResult?.installer_size_bytes ?? null,
         percent: 100,
-        message: result.message,
+        message: result.will_restart
+          ? `${result.message} 即将退出…`
+          : result.message,
       });
+      // Process exits shortly after a successful will_restart install; keep the
+      // busy flag set so the user cannot start another install attempt.
+      if (!result.will_restart) {
+        setIsInstallingUpdate(false);
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
-    } finally {
       setIsInstallingUpdate(false);
     }
   }
@@ -3542,10 +3616,72 @@ function App() {
                                   <div>
                                     <dt>保存形态</dt>
                                     <dd>
-                                      {(selectedJob.source.media_save_mode ??
-                                        "video") === "audio"
-                                        ? "音频"
-                                        : "视频"}
+                                      <fieldset
+                                        className="radio-fieldset"
+                                        disabled={
+                                          selectedJob.status === "running" ||
+                                          isSavingJobMediaSaveMode
+                                        }
+                                      >
+                                        <legend className="visually-hidden">
+                                          保存形态
+                                        </legend>
+                                        <div className="checkbox-row">
+                                          <label className="checkbox">
+                                            <input
+                                              type="radio"
+                                              name="job-media-save-mode"
+                                              value="video"
+                                              checked={
+                                                (selectedJob.source
+                                                  .media_save_mode ??
+                                                  "video") === "video"
+                                              }
+                                              disabled={
+                                                selectedJob.status ===
+                                                  "running" ||
+                                                isSavingJobMediaSaveMode
+                                              }
+                                              onChange={() =>
+                                                void handleJobMediaSaveModeChange(
+                                                  "video",
+                                                )
+                                              }
+                                            />
+                                            保存视频
+                                          </label>
+                                          <label className="checkbox">
+                                            <input
+                                              type="radio"
+                                              name="job-media-save-mode"
+                                              value="audio"
+                                              checked={
+                                                (selectedJob.source
+                                                  .media_save_mode ??
+                                                  "video") === "audio"
+                                              }
+                                              disabled={
+                                                selectedJob.status ===
+                                                  "running" ||
+                                                isSavingJobMediaSaveMode
+                                              }
+                                              onChange={() =>
+                                                void handleJobMediaSaveModeChange(
+                                                  "audio",
+                                                )
+                                              }
+                                            />
+                                            保存音频
+                                          </label>
+                                        </div>
+                                        <p className="muted small">
+                                          {isSavingJobMediaSaveMode
+                                            ? "正在保存…"
+                                            : selectedJob.status === "running"
+                                              ? "任务运行中不可修改。"
+                                              : "可随时重配；若已有媒体产物，切换后需重新下载/录制。"}
+                                        </p>
+                                      </fieldset>
                                     </dd>
                                   </div>
                                 )}
@@ -5324,8 +5460,9 @@ function App() {
                 <p className="muted small">
                   从 GitHub Releases 查询最新版本；有安装包时可
                   <strong>应用内下载并静默安装</strong>
-                  （需确认一次，无安装向导界面）。默认仓库
-                  627157746/video-tool。
+                  （需确认一次，无安装向导界面；安装完成后
+                  <strong>自动重启</strong>
+                  ）。默认仓库 627157746/video-tool。
                 </p>
                 <div className="detail-actions">
                   <button

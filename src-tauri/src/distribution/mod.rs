@@ -179,6 +179,9 @@ pub struct AppUpdateInstallResult {
     pub installer_path: String,
     pub installer_name: String,
     pub launched: bool,
+    /// When true, the app will exit shortly so the silent installer can replace
+    /// files and then relaunch the updated executable.
+    pub will_restart: bool,
     pub message: String,
 }
 
@@ -643,7 +646,7 @@ pub fn check_app_update() -> AppResult<UpdateCheckResult> {
     let message = if update_available {
         if can_install {
             format!(
-                "发现新版本 {}（当前 {}）。可在应用内下载并静默安装（无向导）。",
+                "发现新版本 {}（当前 {}）。可在应用内下载并静默安装（无向导）；安装完成后将自动重启。",
                 latest_version.as_deref().unwrap_or("?"),
                 current_version
             )
@@ -822,25 +825,29 @@ pub fn install_app_update(
         downloaded_bytes,
         total_bytes: total_bytes.or(Some(downloaded_bytes)),
         percent: Some(100.0),
-        message: "正在静默安装（无向导）…".into(),
+        message: "正在调度静默安装并准备自动重启…".into(),
     });
 
-    launch_installer_silent(&installer_path)?;
+    let app_executable = std::env::current_exe().map_err(|error| {
+        AppError::message(format!("无法定位当前程序路径，无法自动重启: {error}"))
+    })?;
+    schedule_silent_install_and_restart(&installer_path, &app_executable)?;
 
     emit_progress(AppUpdateProgress {
         phase: "done".into(),
         downloaded_bytes,
         total_bytes: total_bytes.or(Some(downloaded_bytes)),
         percent: Some(100.0),
-        message: "静默安装已启动".into(),
+        message: "静默安装已调度，即将退出并自动重启".into(),
     });
 
     Ok(AppUpdateInstallResult {
         installer_path: path_to_string(&installer_path),
         installer_name: safe_name,
         launched: true,
+        will_restart: true,
         message: format!(
-            "已下载并启动静默安装（目标版本 {}）。安装在后台进行、无向导界面；完成后请关闭本应用并重新打开。",
+            "已下载安装包（目标版本 {}）。应用即将退出，静默安装完成后会自动重新启动。",
             check.latest_version.as_deref().unwrap_or("?")
         ),
     })
@@ -1020,40 +1027,66 @@ fn sanitize_installer_file_name(name: &str) -> String {
     }
 }
 
-/// Launch installer without interactive wizard UI.
+/// Schedule a detached helper that waits for this process to exit, runs the
+/// silent installer, then relaunches the app executable.
+///
 /// - NSIS setup.exe: `/S` (silent)
-/// - MSI: `msiexec /i … /qn /norestart` (quiet, no reboot prompt)
-fn launch_installer_silent(path: &Path) -> AppResult<()> {
+/// - MSI: `msiexec /i … /qn /norestart` (quiet, no OS reboot prompt)
+///
+/// The current process must exit shortly after this returns so installer can
+/// replace in-use binaries.
+fn schedule_silent_install_and_restart(
+    installer_path: &Path,
+    app_executable: &Path,
+) -> AppResult<()> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW | DETACHED_PROCESS — keep helper alive after parent exits.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let extension = path
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+        let installer = installer_path
+            .to_string_lossy()
+            .replace('"', "")
+            .replace('%', "%%");
+        let app_exe = app_executable
+            .to_string_lossy()
+            .replace('"', "")
+            .replace('%', "%%");
+        if installer.trim().is_empty() || app_exe.trim().is_empty() {
+            return Err(AppError::message(
+                "安装包或程序路径无效，无法调度自动重启安装。".to_string(),
+            ));
+        }
+
+        let extension = installer_path
             .extension()
             .and_then(|value| value.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let spawn_result = if extension == "msi" {
-            // Quiet install: no wizard. Files in use may require restart after close.
-            std::process::Command::new("msiexec")
-                .args(["/i"])
-                .arg(path)
-                .args(["/qn", "/norestart"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
+        // Wait a few seconds so this process can exit and release file locks,
+        // then wait for installer completion before relaunching.
+        let install_step = if extension == "msi" {
+            format!("msiexec /i \"{installer}\" /qn /norestart")
         } else {
             // Tauri NSIS installer supports /S for fully silent install.
-            std::process::Command::new(path)
-                .arg("/S")
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
+            format!("start /wait \"\" \"{installer}\" /S")
         };
-        spawn_result.map_err(|error| AppError::message(format!("启动静默安装失败: {error}")))?;
+        let script =
+            format!("ping 127.0.0.1 -n 4 >nul & {install_step} & start \"\" \"{app_exe}\"");
+
+        std::process::Command::new("cmd")
+            .args(["/C", &script])
+            .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+            .spawn()
+            .map_err(|error| AppError::message(format!("调度静默安装与自动重启失败: {error}")))?;
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = path;
+        let _ = installer_path;
+        let _ = app_executable;
         Err(AppError::message(
             "当前平台尚未支持应用内静默安装，请打开发布页手动安装。".to_string(),
         ))

@@ -98,6 +98,7 @@ pub fn run() {
             commands::select_job_segments,
             commands::update_job_title,
             commands::update_job_group,
+            commands::update_job_media_save_mode,
             commands::update_job_pipeline,
             commands::export_job,
             commands::test_provider,

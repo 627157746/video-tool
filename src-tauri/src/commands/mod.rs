@@ -3,9 +3,10 @@ use crate::error::{AppError, AppResult};
 use crate::models::{
     CreateDownloadJobRequest, CreateDownloadJobsBatchRequest, CreateDownloadJobsBatchResponse,
     CreateImportJobRequest, CreateLiveRecordJobRequest, ExportJobRequest, Job, JobKind,
-    JobListItem, JobLogRequest, JobSource, MediaSaveMode, PipelineOptions,
+    JobListItem, JobLogRequest, JobSource, JobStep, MediaSaveMode, PipelineOptions,
     RetryTranscriptSegmentRequest, RunJobRequest, SaveConfigRequest, SelectSegmentsRequest,
-    TestProviderRequest, UpdateJobGroupRequest, UpdateJobPipelineRequest, UpdateJobTitleRequest,
+    StepStatus, TestProviderRequest, UpdateJobGroupRequest, UpdateJobMediaSaveModeRequest,
+    UpdateJobPipelineRequest, UpdateJobTitleRequest,
 };
 use crate::pipeline::{self, RunnerState};
 use crate::sidecar::SidecarStatus;
@@ -654,6 +655,73 @@ pub fn update_job_group(
 }
 
 #[tauri::command]
+pub fn update_job_media_save_mode(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: UpdateJobMediaSaveModeRequest,
+) -> AppResult<Job> {
+    let _operation_guard = state.operation_lock.lock().expect("operation lock");
+    if state.runner.is_job_running(&request.job_id) {
+        return Err(AppError::message("任务运行期间不能修改保存形态"));
+    }
+
+    let config = state.config.lock().expect("config lock");
+    let mut job = workspace::load_job(config.workspace_path(), &request.job_id)?;
+
+    match job.source.kind {
+        JobKind::Download | JobKind::LiveRecord => {}
+        JobKind::ImportLocal => {
+            return Err(AppError::message(
+                "本地导入任务不支持「保存视频 / 保存音频」配置",
+            ));
+        }
+    }
+
+    if job.source.media_save_mode == request.media_save_mode {
+        return Ok(job);
+    }
+
+    let ingest_has_run = job.step_statuses.iter().any(|progress| {
+        progress.step == JobStep::Ingest
+            && matches!(
+                progress.status,
+                StepStatus::Succeeded | StepStatus::Failed | StepStatus::Skipped
+            )
+    });
+    let has_media_product =
+        !job.media_files.is_empty() || !job.media_segments.is_empty() || ingest_has_run;
+
+    job.source.media_save_mode = request.media_save_mode;
+    job.updated_at = chrono::Utc::now();
+
+    if has_media_product {
+        let job_dir = workspace::validated_job_dir(config.workspace_path(), &job.id)?;
+        pipeline::paths::clear_media_artifacts(&job_dir)?;
+        pipeline::paths::remove_downstream_artifacts(&job_dir, &JobStep::Ingest)?;
+        job.set_step_status(
+            &JobStep::Ingest,
+            StepStatus::Pending,
+            Some("保存形态已更改，需重新下载/录制".to_string()),
+        );
+        job.invalidate_after_step(&JobStep::Ingest);
+        job.transcript_edited_at = None;
+        job.media_purged_at = None;
+        job.duration_label = None;
+        job.error_message = None;
+        job.error_code = None;
+        job.current_step = None;
+        job.progress = 0.0;
+        job.live_capture_active = false;
+        job.refresh_derived_status();
+    }
+
+    workspace::save_job(config.workspace_path(), &job)?;
+    use tauri::Emitter;
+    let _ = app.emit("job-updated", &job);
+    Ok(job)
+}
+
+#[tauri::command]
 pub fn update_job_pipeline(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1228,9 +1296,19 @@ pub fn install_app_update(
     app: tauri::AppHandle,
 ) -> AppResult<crate::distribution::AppUpdateInstallResult> {
     use tauri::Emitter;
-    crate::distribution::install_app_update(&mut |progress| {
+    let result = crate::distribution::install_app_update(&mut |progress| {
         let _ = app.emit("app-update-progress", &progress);
-    })
+    })?;
+    // Exit after the IPC response is delivered so the detached installer can
+    // replace binaries that were locked by this process, then relaunch.
+    if result.will_restart {
+        let app_handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(900));
+            app_handle.exit(0);
+        });
+    }
+    Ok(result)
 }
 
 #[tauri::command]

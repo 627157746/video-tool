@@ -10,6 +10,7 @@ import type {
   SaveConfigRequest,
   SidecarStatus,
   UpdateJobGroupRequest,
+  UpdateJobMediaSaveModeRequest,
   UpdateJobPipelineRequest,
   UpdateJobTitleRequest,
   WorkspaceHealthReport,
@@ -175,6 +176,12 @@ export async function updateJobGroup(
   request: UpdateJobGroupRequest,
 ): Promise<Job> {
   return invoke<Job>("update_job_group", { request });
+}
+
+export async function updateJobMediaSaveMode(
+  request: UpdateJobMediaSaveModeRequest,
+): Promise<Job> {
+  return invoke<Job>("update_job_media_save_mode", { request });
 }
 
 export async function exportJob(

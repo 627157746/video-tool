@@ -112,6 +112,13 @@ pub fn free_disk_gb(path: &Path) -> Option<u64> {
         .map(|bytes| bytes / (1024 * 1024 * 1024))
 }
 
+/// Remove files under `media/` (segments, original product, preview copy).
+/// Used when reconfiguring save mode so a re-ingest does not leave a stale
+/// opposite-mode product beside the new artifact.
+pub fn clear_media_artifacts(job_dir: &Path) -> AppResult<()> {
+    remove_directory_contents(&media_dir(job_dir))
+}
+
 pub fn remove_downstream_artifacts(job_dir: &Path, changed_step: &JobStep) -> AppResult<()> {
     match changed_step {
         JobStep::Ingest => {
@@ -216,5 +223,20 @@ mod tests {
                 "other.bin",
             ]
         );
+    }
+
+    #[test]
+    fn clear_media_artifacts_removes_files_under_media() {
+        let root =
+            std::env::temp_dir().join(format!("video-tool-clear-media-{}", uuid::Uuid::new_v4()));
+        let media = root.join("media");
+        fs::create_dir_all(&media).expect("create media");
+        fs::write(media.join("original.mp4"), b"video").expect("write media");
+        fs::write(media.join("preview.mp4"), b"preview").expect("write preview");
+        clear_media_artifacts(&root).expect("clear media");
+        assert!(!media.join("original.mp4").exists());
+        assert!(!media.join("preview.mp4").exists());
+        assert!(media.is_dir());
+        let _ = fs::remove_dir_all(root);
     }
 }

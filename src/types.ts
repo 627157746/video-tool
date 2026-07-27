@@ -130,6 +130,12 @@ export interface StepProgress {
 /** Exclusive final media product for download / live ingest. */
 export type MediaSaveMode = "video" | "audio";
 
+/** Reconfigure exclusive video | audio product mode on an existing job. */
+export interface UpdateJobMediaSaveModeRequest {
+  job_id: string;
+  media_save_mode: MediaSaveMode;
+}
+
 export interface Job {
   id: string;
   status: JobStatus;
@@ -443,6 +449,8 @@ export interface AppUpdateInstallResult {
   installer_path: string;
   installer_name: string;
   launched: boolean;
+  /** App will exit shortly; silent installer then relaunches the updated build. */
+  will_restart: boolean;
   message: string;
 }
 
