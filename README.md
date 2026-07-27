@@ -17,7 +17,14 @@
 
 ## 当前版本
 
-应用版本 **`0.3.1`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+应用版本 **`0.3.2`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+
+### v0.3.2
+
+- 修复：下载过程中误报「任务不存在」（进度写盘节流 + 读取短重试 + 运行中 UI 软处理）
+- 修复：应用内更新后**自动重启**更可靠（独立 helper 等待进程退出再安装并拉起）
+- 重要操作二次确认：删除、清理媒体、重跑媒体/转写/总结、停止录制、导出、导入配置、修复工作区、重建索引等
+- `.cursor/mcp.json` 加入 gitignore，避免 MCP 密钥误提交
 
 ### v0.3.1
 
