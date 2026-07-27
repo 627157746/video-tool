@@ -6,7 +6,7 @@
 - 发布页：<https://github.com/627157746/video-tool/releases>
 - 产品共识：[`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md)
 
-应用内「检查更新」默认查询上述 GitHub Releases；发现新版本且有 Windows 安装包时可「下载并安装更新」（确认后下载并**静默安装**，无向导）。首次安装推荐 NSIS 一键包。私有镜像可用环境变量 `VIDEO_TOOL_RELEASE_API` / `VIDEO_TOOL_RELEASE_PAGE` 覆盖，私有仓库可设 `VIDEO_TOOL_GITHUB_TOKEN`。
+应用内「检查更新」默认查询上述 GitHub Releases；发现新版本且有 Windows 安装包时可「下载并安装更新」（确认后**静默安装并自动重启**，无向导）。首次安装推荐 NSIS 一键包。私有镜像可用环境变量 `VIDEO_TOOL_RELEASE_API` / `VIDEO_TOOL_RELEASE_PAGE` 覆盖，私有仓库可设 `VIDEO_TOOL_GITHUB_TOKEN`。
 
 ## 技术栈
 
@@ -17,7 +17,12 @@
 
 ## 当前版本
 
-应用版本 **`0.3.0`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+应用版本 **`0.3.1`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+
+### v0.3.1
+
+- 应用内更新：静默安装完成后**自动退出并重新启动**，无需手动关闭再打开
+- 已有下载 / 直播任务可在详情中重配「保存视频 | 保存音频」；切换后清除旧媒体产物并标记需重新下载/录制
 
 ### v0.3.0
 
