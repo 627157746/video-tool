@@ -6,6 +6,9 @@
   "permissions": [
     "core:default",
     "dialog:allow-open",
+    "dialog:allow-ask",
+    "dialog:allow-confirm",
+    "dialog:allow-message",
     "opener:default",
     "notification:default",
     {

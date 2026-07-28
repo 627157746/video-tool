@@ -87,9 +87,9 @@ export function TranscriptProofreadPanel({
       return;
     }
     if (
-      !confirmAction(
+      !(await confirmAction(
         "确定保存校对结果吗？\n\n保存后章节与总结会失效，需要重新运行对应步骤才能更新。",
-      )
+      ))
     ) {
       return;
     }

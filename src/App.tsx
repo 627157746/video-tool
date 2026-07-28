@@ -1571,9 +1571,9 @@ function App() {
     if (hasExistingMediaProduct) {
       const modeLabel = nextMode === "audio" ? "保存音频" : "保存视频";
       if (
-        !confirmAction(
+        !(await confirmAction(
           `将改为「${modeLabel}」。\n\n已有媒体产物会被清除，下游转写/总结需在重新下载或录制后重跑。\n\n是否继续？`,
-        )
+        ))
       ) {
         return;
       }
@@ -1673,9 +1673,9 @@ function App() {
 
   async function handleDeleteJob(job: JobListItem) {
     if (
-      !confirmAction(
+      !(await confirmAction(
         `确定永久删除任务“${job.title}”吗？\n\n任务目录中的媒体、字幕、总结和日志都会被删除，且无法恢复。`,
-      )
+      ))
     ) {
       return;
     }
@@ -1712,9 +1712,9 @@ function App() {
 
   async function handleStopRecording(jobId: string) {
     if (
-      !confirmAction(
+      !(await confirmAction(
         "确定停止当前直播录制吗？\n\n将结束抓流并合并已有分段；已录内容会保留，但无法继续追加同一场录制。",
-      )
+      ))
     ) {
       return;
     }
@@ -1739,9 +1739,9 @@ function App() {
 
   async function handleExport(jobId: string) {
     if (
-      !confirmAction(
+      !(await confirmAction(
         "确定导出该任务包吗？\n\n将打包任务目录中的媒体、转写、总结与日志（体积可能较大）。",
-      )
+      ))
     ) {
       return;
     }
@@ -1763,9 +1763,9 @@ function App() {
     }
     if (
       job.transcript_edited_at &&
-      !confirmAction(
+      !(await confirmAction(
         "该任务的转写文本已手工校对；修改选段会重建合并文字并覆盖校对结果。确定继续吗？",
-      )
+      ))
     ) {
       return;
     }
@@ -1796,16 +1796,16 @@ function App() {
       selectedJobRef.current?.id === jobId ? selectedJobRef.current : null;
     if (
       currentJob?.transcript_edited_at &&
-      !confirmAction(
+      !(await confirmAction(
         "该任务的转写文本已手工校对；重试分段会重建合并文字并覆盖校对结果。确定继续吗？",
-      )
+      ))
     ) {
       return;
     }
     if (
-      !confirmAction(
+      !(await confirmAction(
         `确定重试转写分段「${segmentId}」吗？\n\n该分段会重新转写；成功后需重跑合并字幕才能更新全文。`,
-      )
+      ))
     ) {
       return;
     }
@@ -1854,9 +1854,9 @@ function App() {
     if (
       currentJob?.transcript_edited_at &&
       stepRegeneratesMergedTranscript &&
-      !confirmAction(
+      !(await confirmAction(
         "该任务的转写文本已手工校对；重跑该步骤会重新生成合并文字并覆盖校对结果。确定继续吗？",
-      )
+      ))
     ) {
       return;
     }
@@ -1875,29 +1875,29 @@ function App() {
     if (
       isFullOrIngest &&
       hasExistingMediaProduct &&
-      !confirmAction(
+      !(await confirmAction(
         step == null
           ? "确定重新运行整条流水线吗？\n\n将重新获取媒体，并可能覆盖已有转写/总结产物。"
           : "确定重新执行「获取媒体」吗？\n\n已有媒体可能被覆盖，下游转写/总结通常需要重跑。",
-      )
+      ))
     ) {
       return;
     }
     if (
       step === "transcribe" &&
-      !confirmAction(
+      !(await confirmAction(
         "确定重新执行转写吗？\n\n现有转写分段可能被覆盖，合并字幕与总结通常需要重跑。",
-      )
+      ))
     ) {
       return;
     }
     if (
       (step === "summarize" || step === "chapterize") &&
-      !confirmAction(
+      !(await confirmAction(
         step === "summarize"
           ? "确定重新生成 AI 总结吗？\n\n现有总结文档将被覆盖。"
           : "确定重新生成章节吗？\n\n现有章节产物将被覆盖。",
-      )
+      ))
     ) {
       return;
     }
@@ -1986,9 +1986,9 @@ function App() {
       nextWorkspace &&
       previousWorkspace.replace(/\\/g, "/") !==
         nextWorkspace.replace(/\\/g, "/") &&
-      !confirmAction(
+      !(await confirmAction(
         `确定切换工作区吗？\n\n从：\n${previousWorkspace}\n\n到：\n${nextWorkspace}\n\n任务列表将切换到新工作区；正在运行的任务会阻止保存。`,
-      )
+      ))
     ) {
       return;
     }
@@ -2187,9 +2187,9 @@ function App() {
 
   async function handleImportAppConfigFromClipboard() {
     if (
-      !confirmAction(
+      !(await confirmAction(
         "确定从剪贴板导入配置吗？\n\n将覆盖当前 Provider / 模板等设置（默认不导入密钥）。此操作不可自动撤销。",
-      )
+      ))
     ) {
       return;
     }
@@ -2242,9 +2242,9 @@ function App() {
     const installerName =
       updateCheckResult?.installer_name?.trim() || "安装包";
     if (
-      !confirmAction(
+      !(await confirmAction(
         `将下载 ${installerName}（目标版本 ${latestVersion}）并直接静默安装（无安装向导）。\n\n安装完成后应用会自动退出，并在安装结束后重新启动。\n\n是否继续？`,
-      )
+      ))
     ) {
       return;
     }
@@ -2311,9 +2311,9 @@ function App() {
 
   async function handleRepairWorkspaceHealth() {
     if (
-      !confirmAction(
+      !(await confirmAction(
         "确定修复工作区健康问题吗？\n\n会把残留的 running/queued 状态恢复为失败或待执行，并尝试重建空的媒体索引。不会删除任务目录。",
-      )
+      ))
     ) {
       return;
     }
@@ -2778,9 +2778,9 @@ function App() {
 
   async function handleRebuildSearchIndex() {
     if (
-      !confirmAction(
+      !(await confirmAction(
         "确定重建全文搜索索引吗？\n\n将清空并重新扫描工作区内全部任务的转写与总结，大工作区可能需要一些时间。",
-      )
+      ))
     ) {
       return;
     }
