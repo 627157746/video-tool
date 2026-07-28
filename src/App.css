@@ -2454,6 +2454,56 @@ textarea:focus-visible,
   border-top: 1px solid var(--border-subtle);
 }
 
+/* ── In-app confirm dialog (matches task-center modal language) ── */
+
+.confirm-dialog-backdrop {
+  z-index: 40;
+}
+
+.confirm-dialog {
+  width: min(420px, 100%);
+  padding: 1.1rem 1.15rem 1.05rem;
+}
+
+.confirm-dialog-header {
+  align-items: flex-start;
+  margin-bottom: 0.15rem;
+  padding-bottom: 0.75rem;
+}
+
+.confirm-dialog-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+}
+
+.confirm-dialog-message {
+  margin: 0;
+  white-space: pre-line;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.65;
+}
+
+.confirm-dialog-actions {
+  gap: 0.55rem;
+  margin-top: 1.05rem;
+  padding-top: 0.9rem;
+}
+
+.confirm-dialog--warning .detail-kicker,
+.confirm-dialog--error .detail-kicker {
+  color: var(--warn-fg);
+}
+
+.confirm-dialog--error .detail-kicker {
+  color: var(--bad-fg);
+}
+
+.confirm-dialog--info .detail-kicker {
+  color: var(--accent-bright);
+}
+
 /* ── Scrollbars ── */
 
 .list-panel,

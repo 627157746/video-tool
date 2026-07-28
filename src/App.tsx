@@ -129,6 +129,7 @@ import {
 } from "./jobUtils";
 import { PathPickerField } from "./components/PathPickerField";
 import { CapacityPanel } from "./components/CapacityPanel";
+import { ConfirmDialogHost } from "./components/ConfirmDialogHost";
 import { MediaPreviewPanel } from "./components/MediaPreviewPanel";
 import { TranscriptProofreadPanel } from "./components/TranscriptProofreadPanel";
 import "./App.css";
@@ -6776,6 +6777,8 @@ function App() {
           </div>
         </div>
       )}
+
+      <ConfirmDialogHost />
     </div>
   );
 }
