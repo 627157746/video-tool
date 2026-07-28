@@ -1795,17 +1795,12 @@ function App() {
   async function handleRetrySegment(jobId: string, segmentId: string) {
     const currentJob =
       selectedJobRef.current?.id === jobId ? selectedJobRef.current : null;
-    if (
-      currentJob?.transcript_edited_at &&
-      !(await confirmAction(
-        "该任务的转写文本已手工校对；重试分段会重建合并文字并覆盖校对结果。确定继续吗？",
-      ))
-    ) {
-      return;
-    }
+    const proofreadWarning = currentJob?.transcript_edited_at
+      ? "该任务的转写文本已手工校对；重试后合并文字会覆盖校对结果。\n\n"
+      : "";
     if (
       !(await confirmAction(
-        `确定重试转写分段「${segmentId}」吗？\n\n该分段会重新转写；成功后需重跑合并字幕才能更新全文。`,
+        `${proofreadWarning}确定重试转写分段「${segmentId}」吗？\n\n该分段会重新转写；成功后需重跑合并字幕才能更新全文。`,
       ))
     ) {
       return;
@@ -1852,15 +1847,11 @@ function App() {
       step === "ingest" ||
       step === "transcribe" ||
       step === "merge_transcript";
-    if (
-      currentJob?.transcript_edited_at &&
-      stepRegeneratesMergedTranscript &&
-      !(await confirmAction(
-        "该任务的转写文本已手工校对；重跑该步骤会重新生成合并文字并覆盖校对结果。确定继续吗？",
-      ))
-    ) {
-      return;
-    }
+    const hasProofread = Boolean(currentJob?.transcript_edited_at);
+    const proofreadNote =
+      hasProofread && stepRegeneratesMergedTranscript
+        ? "\n\n注意：该任务转写已手工校对，此操作会覆盖校对结果。"
+        : "";
     const isFullOrIngest = step == null || step === "ingest";
     const hasExistingMediaProduct =
       currentJob != null &&
@@ -1873,34 +1864,48 @@ function App() {
               stepProgress.status === "failed" ||
               stepProgress.status === "skipped"),
         ));
-    if (
-      isFullOrIngest &&
-      hasExistingMediaProduct &&
-      !(await confirmAction(
-        step == null
-          ? "确定重新运行整条流水线吗？\n\n将重新获取媒体，并可能覆盖已有转写/总结产物。"
-          : "确定重新执行「获取媒体」吗？\n\n已有媒体可能被覆盖，下游转写/总结通常需要重跑。",
-      ))
-    ) {
-      return;
-    }
-    if (
-      step === "transcribe" &&
-      !(await confirmAction(
-        "确定重新执行转写吗？\n\n现有转写分段可能被覆盖，合并字幕与总结通常需要重跑。",
-      ))
-    ) {
-      return;
-    }
-    if (
-      (step === "summarize" || step === "chapterize") &&
-      !(await confirmAction(
-        step === "summarize"
-          ? "确定重新生成 AI 总结吗？\n\n现有总结文档将被覆盖。"
-          : "确定重新生成章节吗？\n\n现有章节产物将被覆盖。",
-      ))
-    ) {
-      return;
+
+    // At most one confirm dialog: fold proofread risk into the primary action text.
+    if (isFullOrIngest && hasExistingMediaProduct) {
+      if (
+        !(await confirmAction(
+          (step == null
+            ? "确定重新运行整条流水线吗？\n\n将重新获取媒体，并可能覆盖已有转写/总结产物。"
+            : "确定重新执行「获取媒体」吗？\n\n已有媒体可能被覆盖，下游转写/总结通常需要重跑。") +
+            proofreadNote,
+        ))
+      ) {
+        return;
+      }
+    } else if (step === "transcribe") {
+      if (
+        !(await confirmAction(
+          "确定重新执行转写吗？\n\n现有转写分段可能被覆盖，合并字幕与总结通常需要重跑。" +
+            proofreadNote,
+        ))
+      ) {
+        return;
+      }
+    } else if (step === "summarize" || step === "chapterize") {
+      if (
+        !(await confirmAction(
+          step === "summarize"
+            ? "确定重新生成 AI 总结吗？\n\n现有总结文档将被覆盖。"
+            : "确定重新生成章节吗？\n\n现有章节产物将被覆盖。",
+        ))
+      ) {
+        return;
+      }
+    } else if (hasProofread && stepRegeneratesMergedTranscript) {
+      if (
+        !(await confirmAction(
+          step === "merge_transcript"
+            ? "该任务的转写文本已手工校对；重跑合并字幕会重新生成合并文字并覆盖校对结果。确定继续吗？"
+            : "该任务的转写文本已手工校对；重跑该步骤会重新生成合并文字并覆盖校对结果。确定继续吗？",
+        ))
+      ) {
+        return;
+      }
     }
     setIsBusy(true);
     setErrorMessage(null);
