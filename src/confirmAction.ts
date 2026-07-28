@@ -13,6 +13,7 @@ export interface ConfirmActionOptions {
 }
 
 export interface ConfirmRequest {
+  id: string;
   message: string;
   options: ConfirmActionOptions;
   resolve: (confirmed: boolean) => void;
@@ -25,8 +26,23 @@ let confirmHostHandler: ConfirmHostHandler | null = null;
 /**
  * Register the in-app confirm dialog host. Called by `ConfirmDialogHost` on
  * mount/unmount. Only one host is active at a time.
+ *
+ * When clearing (`handler === null`), pass `expectedHandler` so a StrictMode
+ * cleanup from an older mount does not wipe a newer host registration.
  */
-export function registerConfirmHost(handler: ConfirmHostHandler | null): void {
+export function registerConfirmHost(
+  handler: ConfirmHostHandler | null,
+  expectedHandler?: ConfirmHostHandler,
+): void {
+  if (handler == null) {
+    if (
+      expectedHandler == null ||
+      confirmHostHandler === expectedHandler
+    ) {
+      confirmHostHandler = null;
+    }
+    return;
+  }
   confirmHostHandler = handler;
 }
 
@@ -35,13 +51,17 @@ export function registerConfirmHost(handler: ConfirmHostHandler | null): void {
  * Renders through the in-app modal host so styling matches the task center UI.
  * Falls back to `window.confirm` only when no host is mounted (e.g. tests).
  */
+let confirmRequestSequence = 0;
+
 export function confirmAction(
   message: string,
   options: ConfirmActionOptions = {},
 ): Promise<boolean> {
   if (confirmHostHandler) {
     return new Promise<boolean>((resolve) => {
+      confirmRequestSequence += 1;
       confirmHostHandler?.({
+        id: `confirm-${confirmRequestSequence}`,
         message,
         options,
         resolve,

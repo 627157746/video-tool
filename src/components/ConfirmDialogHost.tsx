@@ -5,47 +5,78 @@ import {
 } from "../confirmAction";
 
 /**
- * In-app confirm dialog host. Registers itself as the global confirmAction
- * backend so call sites can `await confirmAction(...)` without depending on
- * browser/native dialogs that break the product visual language.
+ * In-app confirm dialog host.
+ *
+ * Queue mutations must stay outside React state updaters: StrictMode double-
+ * invokes updaters in development, and `queue.shift()` inside setState would
+ * drop the first confirm (user has to click delete twice).
  */
 export function ConfirmDialogHost() {
   const [activeRequest, setActiveRequest] = useState<ConfirmRequest | null>(
     null,
   );
   const queueRef = useRef<ConfirmRequest[]>([]);
+  const activeRequestRef = useRef<ConfirmRequest | null>(null);
+  const isResolvingRef = useRef(false);
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
   const titleId = useId();
   const descriptionId = useId();
 
+  const syncActiveFromQueue = () => {
+    const nextActiveRequest = queueRef.current[0] ?? null;
+    activeRequestRef.current = nextActiveRequest;
+    setActiveRequest(nextActiveRequest);
+  };
+
   useEffect(() => {
-    const presentNextRequest = () => {
-      setActiveRequest((currentRequest) => {
-        if (currentRequest != null) {
-          return currentRequest;
-        }
-        return queueRef.current.shift() ?? null;
-      });
+    const enqueueRequest = (request: ConfirmRequest) => {
+      queueRef.current.push(request);
+      // Only promote when nothing is currently shown.
+      if (activeRequestRef.current == null) {
+        syncActiveFromQueue();
+      }
     };
 
-    registerConfirmHost((request) => {
-      queueRef.current.push(request);
-      presentNextRequest();
-    });
+    registerConfirmHost(enqueueRequest);
 
     return () => {
-      registerConfirmHost(null);
-      // Reject any queued prompts if the host unmounts mid-session.
+      // StrictMode remounts effects; only clear if we are still the active host.
+      registerConfirmHost(null, enqueueRequest);
       const pendingRequests = queueRef.current.splice(0);
+      activeRequestRef.current = null;
+      isResolvingRef.current = false;
       for (const pendingRequest of pendingRequests) {
         pendingRequest.resolve(false);
       }
-      setActiveRequest((currentRequest) => {
-        currentRequest?.resolve(false);
-        return null;
-      });
+      setActiveRequest(null);
     };
   }, []);
+
+  const resolveRequest = (confirmed: boolean) => {
+    if (isResolvingRef.current) {
+      return;
+    }
+    const currentRequest = activeRequestRef.current ?? queueRef.current[0];
+    if (currentRequest == null) {
+      return;
+    }
+    isResolvingRef.current = true;
+    try {
+      if (queueRef.current[0] === currentRequest) {
+        queueRef.current.shift();
+      } else {
+        const requestIndex = queueRef.current.indexOf(currentRequest);
+        if (requestIndex >= 0) {
+          queueRef.current.splice(requestIndex, 1);
+        }
+      }
+      activeRequestRef.current = null;
+      currentRequest.resolve(confirmed);
+      syncActiveFromQueue();
+    } finally {
+      isResolvingRef.current = false;
+    }
+  };
 
   useEffect(() => {
     if (activeRequest == null) {
@@ -80,21 +111,11 @@ export function ConfirmDialogHost() {
       subtree: true,
     });
 
-    const finishRequest = (confirmed: boolean) => {
-      setActiveRequest((currentRequest) => {
-        if (currentRequest == null) {
-          return null;
-        }
-        currentRequest.resolve(confirmed);
-        return queueRef.current.shift() ?? null;
-      });
-    };
-
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
-        finishRequest(false);
+        resolveRequest(false);
         return;
       }
       if (event.key !== "Tab") {
@@ -145,16 +166,6 @@ export function ConfirmDialogHost() {
   const isDestructive = kind === "warning" || kind === "error";
   const kickerLabel =
     kind === "error" ? "危险操作" : kind === "warning" ? "需要确认" : "提示";
-
-  const resolveRequest = (confirmed: boolean) => {
-    setActiveRequest((currentRequest) => {
-      if (currentRequest == null) {
-        return null;
-      }
-      currentRequest.resolve(confirmed);
-      return queueRef.current.shift() ?? null;
-    });
-  };
 
   return (
     <div
