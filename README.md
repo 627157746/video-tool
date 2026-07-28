@@ -17,7 +17,14 @@
 
 ## 当前版本
 
-应用版本 **`0.3.2`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+应用版本 **`0.3.3`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+
+### v0.3.3
+
+- 二次确认改为**应用内模态**（与任务中心 UI 一致），不再使用系统原生对话框
+- 修复：确认框有时需点两次才弹出（StrictMode 下队列被吃掉）
+- 补全确认：删除 Provider / 总结模板 / 任务分组、放弃校对修改
+- 重跑/重试与「已校对」风险合并为**单次确认**，避免连弹两次
 
 ### v0.3.2
 
