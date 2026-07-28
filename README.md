@@ -17,7 +17,11 @@
 
 ## 当前版本
 
-应用版本 **`0.3.3`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+应用版本 **`0.3.4`**（`package.json` / `src-tauri/Cargo.toml` / `tauri.conf.json`）。
+
+### v0.3.4
+
+- 修复：应用内更新下载完成后报「找不到文件 `\video-tool-update\`」——不再用 `start "title"` 嵌套启动 helper，改为直接分离进程运行安装脚本
 
 ### v0.3.3
 
