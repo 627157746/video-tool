@@ -1034,12 +1034,12 @@ fn sanitize_installer_file_name(name: &str) -> String {
 /// - MSI: `msiexec /i … /qn /norestart` (quiet, no OS reboot prompt)
 ///
 /// Implementation notes (Windows):
-/// - A previous one-liner `cmd /C "ping & install & start"` with
-///   `DETACHED_PROCESS` often died with the parent process tree, so the app
-///   never relaunched and users had to start it manually.
-/// - We now write a self-contained `.cmd` helper and launch it via
-///   `cmd /C start …`, which breaks the process tree, then wait for **this**
-///   PID to exit before installing and relaunching.
+/// - Do **not** launch via `cmd /C start "title" …`. Nested quoting through
+///   Rust's argument escaping makes `start` treat the title (`video-tool-update`)
+///   as the executable, producing: 找不到文件 '\video-tool-update\'.
+/// - Write a self-contained `.cmd` helper and spawn `cmd.exe /C <helper>` with
+///   detached process flags so it survives this app's exit, waits for our PID,
+///   then installs and relaunches.
 ///
 /// The current process must exit shortly after this returns so the installer
 /// can replace in-use binaries.
@@ -1050,7 +1050,12 @@ fn schedule_silent_install_and_restart(
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
+        // CREATE_BREAKAWAY_FROM_JOB — survive parent exit and job objects.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 
         let installer = sanitize_path_for_batch(installer_path);
         let app_exe = sanitize_path_for_batch(app_executable);
@@ -1077,23 +1082,38 @@ fn schedule_silent_install_and_restart(
             "update-restart-{process_id}-{}.cmd",
             uuid::Uuid::new_v4().simple()
         ));
-        fs::write(&helper_path, helper_script.as_bytes())
+        // Windows batch parsers expect CRLF; LF-only scripts can mis-parse labels.
+        let helper_script_crlf = helper_script.replace('\n', "\r\n");
+        fs::write(&helper_path, helper_script_crlf.as_bytes())
             .map_err(|error| AppError::message(format!("写入更新辅助脚本失败: {error}")))?;
 
-        // `start "title" /MIN "script.cmd"` creates an independent process that
-        // survives this app's exit. Empty title must not be used — `start`
-        // treats the first quoted token as the window title.
-        let helper_path_for_start = sanitize_path_for_batch(&helper_path);
-        let start_command = format!("start \"video-tool-update\" /MIN \"{helper_path_for_start}\"");
-        std::process::Command::new("cmd.exe")
-            .args(["/C", &start_command])
-            .creation_flags(CREATE_NO_WINDOW)
+        // Pass the helper path as its own argv entry so Rust quotes spaces once.
+        // Never embed `start "title" …` here — that reintroduces the title-as-path bug.
+        let base_flags = CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+        // BREAKAWAY only works when the parent is already in a job with breakaway OK;
+        // fall back without it so normal desktop launches still succeed.
+        let spawn_result = std::process::Command::new("cmd.exe")
+            .arg("/C")
+            .arg(&helper_path)
+            .creation_flags(base_flags | CREATE_BREAKAWAY_FROM_JOB)
             .spawn()
-            .map_err(|error| {
+            .or_else(|_| {
+                std::process::Command::new("cmd.exe")
+                    .arg("/C")
+                    .arg(&helper_path)
+                    .creation_flags(base_flags)
+                    .spawn()
+            });
+
+        match spawn_result {
+            Ok(_) => Ok(()),
+            Err(error) => {
                 let _ = fs::remove_file(&helper_path);
-                AppError::message(format!("调度静默安装与自动重启失败: {error}"))
-            })?;
-        Ok(())
+                Err(AppError::message(format!(
+                    "调度静默安装与自动重启失败: {error}"
+                )))
+            }
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1112,7 +1132,7 @@ fn sanitize_path_for_batch(path: &Path) -> String {
 }
 
 /// Build the Windows helper `.cmd` that waits for `process_id`, installs, then
-/// relaunches. Kept pure for unit tests.
+/// relaunches. Kept pure for unit tests. Uses `\n`; caller writes CRLF on disk.
 fn build_windows_update_helper_script(
     process_id: u32,
     installer_path: &str,
@@ -1120,6 +1140,8 @@ fn build_windows_update_helper_script(
     install_kind: &str,
 ) -> String {
     // Keep the script ASCII-heavy and self-contained. Paths are already sanitized.
+    // Relaunch with `start "" /B` is avoided: /B stays attached to this console.
+    // Use `start "" "exe"` so the new app is independent of this helper.
     format!(
         r#"@echo off
 setlocal EnableExtensions
@@ -1134,20 +1156,20 @@ if %WAIT_COUNT% GEQ 180 goto force_install
 tasklist /FI "PID eq %TARGET_PID%" 2>nul | find "%TARGET_PID%" >nul
 if errorlevel 1 goto app_exited
 set /A WAIT_COUNT+=1
-timeout /t 1 /nobreak >nul
+ping 127.0.0.1 -n 2 >nul
 goto wait_loop
 
 :app_exited
-timeout /t 2 /nobreak >nul
+ping 127.0.0.1 -n 3 >nul
 
 :force_install
 if /I "%INSTALL_KIND%"=="msi" (
   msiexec /i "%INSTALLER%" /qn /norestart
 ) else (
-  "%INSTALLER%" /S
+  start /wait "" "%INSTALLER%" /S
 )
 
-timeout /t 1 /nobreak >nul
+ping 127.0.0.1 -n 2 >nul
 if exist "%APP_EXE%" (
   start "" "%APP_EXE%"
 )
@@ -1422,9 +1444,22 @@ mod tests {
         assert!(script.contains("TARGET_PID=4242"));
         assert!(script.contains(r"C:\Temp\video-tool-setup.exe"));
         assert!(script.contains(r"C:\Program Files\video-tool\video-tool.exe"));
-        assert!(script.contains(r#""%INSTALLER%" /S"#));
+        assert!(script.contains(r#"start /wait "" "%INSTALLER%" /S"#));
         assert!(script.contains(r#"start "" "%APP_EXE%""#));
         assert!(script.contains(r#"tasklist /FI "PID eq %TARGET_PID%""#));
+        // Must never reintroduce the title-as-path bug from nested start.
+        assert!(!script.contains("video-tool-update"));
+    }
+
+    #[test]
+    fn sanitize_path_for_batch_strips_cmd_metacharacters() {
+        let dirty = PathBuf::from(r#"C:\Temp\a&b|c<d>e^f%g"h.exe"#);
+        let cleaned = sanitize_path_for_batch(&dirty);
+        assert!(!cleaned.contains('&'));
+        assert!(!cleaned.contains('|'));
+        assert!(!cleaned.contains('%'));
+        assert!(!cleaned.contains('"'));
+        assert!(cleaned.contains(r"C:\Temp\a"));
     }
 
     #[test]
