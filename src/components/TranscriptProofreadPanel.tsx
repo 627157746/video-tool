@@ -156,7 +156,19 @@ export function TranscriptProofreadPanel({
             type="button"
             className="btn secondary"
             disabled={!hasChanges || isSaving || isJobBusy}
-            onClick={() => void loadCues()}
+            onClick={() => {
+              void (async () => {
+                if (
+                  hasChanges &&
+                  !(await confirmAction(
+                    "确定放弃当前校对修改吗？\n\n未保存的改动将丢失，界面会恢复为磁盘上的最新转写内容。",
+                  ))
+                ) {
+                  return;
+                }
+                await loadCues();
+              })();
+            }}
           >
             放弃修改
           </button>

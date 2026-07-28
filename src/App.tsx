@@ -2408,7 +2408,22 @@ function App() {
     });
   }
 
-  function handleDeleteProvider(providerIndex: number) {
+  async function handleDeleteProvider(providerIndex: number) {
+    const providerToDelete = providerDrafts[providerIndex];
+    if (!providerToDelete) {
+      return;
+    }
+    const providerLabel =
+      providerToDelete.name.trim() ||
+      providerToDelete.id.trim() ||
+      `第 ${providerIndex + 1} 个`;
+    if (
+      !(await confirmAction(
+        `确定删除 Provider「${providerLabel}」吗？\n\n草稿中会立刻移除该档案；保存设置后才会写入配置。若有任务仍引用此 Provider，总结时可能失败。`,
+      ))
+    ) {
+      return;
+    }
     const remainingProviders = providerDrafts.filter(
       (_, currentIndex) => currentIndex !== providerIndex,
     );
@@ -2483,7 +2498,22 @@ function App() {
     }
   }
 
-  function handleDeleteTemplate(templateIndex: number) {
+  async function handleDeleteTemplate(templateIndex: number) {
+    const templateToDelete = templateDrafts[templateIndex];
+    if (!templateToDelete) {
+      return;
+    }
+    const templateLabel =
+      templateToDelete.name.trim() ||
+      templateToDelete.id.trim() ||
+      `第 ${templateIndex + 1} 个`;
+    if (
+      !(await confirmAction(
+        `确定删除总结模板「${templateLabel}」吗？\n\n草稿中会立刻移除该模板；保存设置后才会写入配置。若有任务仍引用此模板，总结时可能失败。`,
+      ))
+    ) {
+      return;
+    }
     const remainingTemplates = templateDrafts.filter(
       (_, currentIndex) => currentIndex !== templateIndex,
     );
@@ -2520,7 +2550,22 @@ function App() {
     setSelectedGroupIndex(nextGroupIndex);
   }
 
-  function handleDeleteGroup(groupIndex: number) {
+  async function handleDeleteGroup(groupIndex: number) {
+    const groupToDelete = groupDrafts[groupIndex];
+    if (!groupToDelete) {
+      return;
+    }
+    const groupLabel =
+      groupToDelete.name.trim() ||
+      groupToDelete.id.trim() ||
+      `第 ${groupIndex + 1} 个`;
+    if (
+      !(await confirmAction(
+        `确定删除任务分组「${groupLabel}」吗？\n\n草稿中会立刻移除该分组；保存设置后，原归属任务将变为未分组。`,
+      ))
+    ) {
+      return;
+    }
     const remainingGroups = groupDrafts.filter(
       (_, currentIndex) => currentIndex !== groupIndex,
     );
@@ -5969,7 +6014,9 @@ function App() {
                               type="button"
                               className="btn danger small"
                               onClick={() =>
-                                handleDeleteProvider(selectedProviderDraft.index)
+                                void handleDeleteProvider(
+                                  selectedProviderDraft.index,
+                                )
                               }
                             >
                               删除
@@ -6163,7 +6210,7 @@ function App() {
                               type="button"
                               className="btn danger small"
                               onClick={() =>
-                                handleDeleteTemplate(
+                                void handleDeleteTemplate(
                                   selectedTemplateDraft.index,
                                 )
                               }
@@ -6310,7 +6357,7 @@ function App() {
                             type="button"
                             className="btn danger small"
                             onClick={() =>
-                              handleDeleteGroup(selectedGroupDraft.index)
+                              void handleDeleteGroup(selectedGroupDraft.index)
                             }
                           >
                             删除
